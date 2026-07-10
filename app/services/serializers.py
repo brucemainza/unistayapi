@@ -71,13 +71,29 @@ def payment_status_for_client(status: str) -> str:
 
 def payment_to_dict(payment: Payment) -> dict:
     amount: Decimal | str = payment.amount
-    return {
+    result = {
         "reference": payment.reference,
         "status": payment_status_for_client(payment.status),
         "amount": str(amount),
         "currency": payment.currency,
+        "paymentType": payment.payment_type,
         "lencoReference": payment.lenco_reference,
     }
+    payload_data = payment.payload or {}
+    if payment.payment_type == "card":
+        meta = (payload_data.get("data") or {}).get("meta")
+        if meta:
+            result["meta"] = meta
+        card_details = (payload_data.get("data") or {}).get("cardDetails")
+        if card_details:
+            result["cardDetails"] = {
+                "firstName": card_details.get("firstName"),
+                "lastName": card_details.get("lastName"),
+                "bin": card_details.get("bin"),
+                "last4": card_details.get("last4"),
+                "cardType": card_details.get("cardType"),
+            }
+    return result
 
 
 def notification_to_dict(notification: Notification) -> dict:
