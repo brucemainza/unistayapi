@@ -24,8 +24,11 @@ class Payment(Base):
     currency: Mapped[str] = mapped_column(
         String(3), default="ZMW", nullable=False
     )
-    operator: Mapped[str] = mapped_column(String(50), nullable=False)
-    phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    payment_type: Mapped[str] = mapped_column(
+        String(20), default="mobile-money", nullable=False
+    )
+    operator: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default="pending", nullable=False
     )
