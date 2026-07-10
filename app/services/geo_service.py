@@ -123,10 +123,10 @@ class GeoService:
         }
 
     def _is_fresh(self, computed_at: datetime) -> bool:
-        return (
-            datetime.now(timezone.utc) - computed_at
-            < timedelta(days=CACHE_TTL_DAYS)
-        )
+        now = datetime.now(timezone.utc)
+        if computed_at.tzinfo is None:
+            computed_at = computed_at.replace(tzinfo=timezone.utc)
+        return now - computed_at < timedelta(days=CACHE_TTL_DAYS)
 
     async def autocomplete(self, input_text: str, session_token: str) -> dict:
         return await self.maps_client.autocomplete(

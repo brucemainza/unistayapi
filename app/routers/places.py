@@ -39,7 +39,7 @@ def _geo_service(db: AsyncSession) -> GeoService:
     )
 
 
-@router.get("/autocomplete", response_model=PlacesAutocompleteResponse)
+@router.get("/autocomplete")
 async def autocomplete(
     request: Request,
     input: str,
@@ -64,7 +64,7 @@ async def autocomplete(
     return envelope(True, "Suggestions retrieved", {"suggestions": suggestions})
 
 
-@router.get("/details", response_model=PlaceDetailsResponse)
+@router.get("/details")
 async def details(
     request: Request,
     place_id: str,
