@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db_types import GeoPoint
@@ -15,7 +15,8 @@ class House(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     location: Mapped[str] = mapped_column(String(255), nullable=False)
-    coords: Mapped[str | None] = mapped_column(GeoPoint(), nullable=True)
+    coords: Mapped[str] = mapped_column(GeoPoint(), nullable=False)
+    formatted_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     university_id: Mapped[str | None] = mapped_column(
         ForeignKey("universities.id"), nullable=True
     )
