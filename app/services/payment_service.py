@@ -14,7 +14,7 @@ from app.models.payment import Payment
 from app.repositories.booking_repo import BookingRepository
 from app.repositories.notification_repo import NotificationRepository
 from app.repositories.payment_repo import PaymentRepository
-from app.schemas.payment import MobileMoneyPaymentRequest
+from app.schemas.payment import CardPaymentRequest, MobileMoneyPaymentRequest
 from app.services.serializers import payment_to_dict
 
 
@@ -80,6 +80,78 @@ class PaymentService:
 
         data = response.get("data") or {}
         status = data.get("status") or "processing"
+        payment = await self.payment_repo.update(
+            payment,
+            status=status,
+            lenco_reference=data.get("lencoReference"),
+            payload=response,
+        )
+        return payment_to_dict(payment)
+
+    async def initiate_card_payment(self, request: CardPaymentRequest) -> dict:
+        if request.booking_id and self.booking_repo is not None:
+            booking = await self.booking_repo.get_by_id(request.booking_id)
+            if booking is None:
+                raise NotFoundError("Booking not found")
+
+        reference = f"UNISTAY-CARD-{uuid4().hex[:18]}"
+        payment = Payment(
+            reference=reference,
+            booking_id=request.booking_id,
+            amount=Decimal(request.amount),
+            currency=request.currency.upper(),
+            payment_type="card",
+            operator=None,
+            phone=None,
+            status="pending",
+            payload={},
+        )
+        payment = await self.payment_repo.create(payment)
+
+        try:
+            key_response = await self.lenco_client.get_encryption_key()
+            key_data = key_response.get("data") or key_response
+
+            lenco_payload = {
+                "reference": reference,
+                "email": request.email,
+                "amount": request.amount,
+                "currency": request.currency.upper(),
+                "customer": {
+                    "firstName": request.customer.first_name,
+                    "lastName": request.customer.last_name,
+                },
+                "billing": {
+                    "streetAddress": request.billing.street_address,
+                    "city": request.billing.city,
+                    "state": request.billing.state or "",
+                    "postalCode": request.billing.postal_code,
+                    "country": request.billing.country.upper(),
+                },
+                "card": {
+                    "number": request.card.number,
+                    "expiryMonth": request.card.expiry_month,
+                    "expiryYear": request.card.expiry_year,
+                    "cvv": request.card.cvv,
+                },
+            }
+            if request.redirect_url:
+                lenco_payload["redirectUrl"] = request.redirect_url
+
+            encrypted = self.lenco_client.encrypt_card_payload(lenco_payload, key_data)
+            response = await self.lenco_client.charge_card(
+                encrypted_payload=encrypted, reference=reference
+            )
+        except LencoError as exc:
+            await self.payment_repo.update(
+                payment,
+                status="failed",
+                payload={"error": exc.message},
+            )
+            raise
+
+        data = response.get("data") or {}
+        status = data.get("status") or "pending"
         payment = await self.payment_repo.update(
             payment,
             status=status,
