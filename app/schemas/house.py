@@ -18,6 +18,7 @@ class HouseResponse(BaseModel):
     id: str
     name: str
     location: str
+    formatted_address: str | None
     university: str | None
     price: int
     walk_time: str | None
@@ -29,6 +30,9 @@ class HouseResponse(BaseModel):
     image_urls: list[str]
     payment_methods: list[str]
     nearby_universities: list[NearbyUniversityResponse]
+    latitude: float | None
+    longitude: float | None
+    distance_m: int | None = None
 
 
 class HouseListResponse(BaseModel):
@@ -86,7 +90,15 @@ class AmenitiesUpdateRequest(BaseModel):
 class HouseSearchParams(BaseModel):
     """Query parameters for house search/listing."""
 
-    university: str | None = Field(None, description="University ID or initials")
+    university_id: str | None = Field(
+        None, description="University ID for radius search"
+    )
+    radius_m: int = Field(
+        3000, ge=100, le=15000, description="Search radius in meters"
+    )
+    university: str | None = Field(
+        None, description="University ID or initials (legacy filter)"
+    )
     q: str | None = Field(None, description="Search term for name or location")
     amenities: list[str] | None = Field(None, description="Required amenities")
     min_price: int | None = Field(None, ge=0)
