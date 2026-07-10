@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from app.clients.lenco_client import LencoClient
 from app.config import settings
-from app.exceptions import AuthError, NotFoundError, ValidationError
+from app.exceptions import AuthError, LencoError, NotFoundError, ValidationError
 from app.models.notification import Notification
 from app.models.payment import Payment
 from app.repositories.booking_repo import BookingRepository
@@ -62,13 +62,22 @@ class PaymentService:
             payload={},
         )
         payment = await self.payment_repo.create(payment)
-        response = await self.lenco_client.charge_mobile_money(
-            amount=request.amount,
-            reference=reference,
-            phone=request.phone,
-            operator=request.operator,
-            country=request.country,
-        )
+        try:
+            response = await self.lenco_client.charge_mobile_money(
+                amount=request.amount,
+                reference=reference,
+                phone=request.phone,
+                operator=request.operator,
+                country=request.country,
+            )
+        except LencoError as exc:
+            await self.payment_repo.update(
+                payment,
+                status="failed",
+                payload={"error": exc.message},
+            )
+            raise
+
         data = response.get("data") or {}
         status = data.get("status") or "processing"
         payment = await self.payment_repo.update(

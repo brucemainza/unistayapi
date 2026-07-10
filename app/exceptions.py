@@ -35,5 +35,5 @@ class ValidationError(AppError):
 
 
 class LencoError(AppError):
-    def __init__(self, message: str = "Payment provider error"):
-        super().__init__(message, 502)
+    def __init__(self, message: str = "Payment provider error", status_code: int = 502):
+        super().__init__(message, status_code)
