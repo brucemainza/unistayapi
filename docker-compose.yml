@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-unistay}
+      POSTGRES_USER: ${POSTGRES_USER:-unistay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unistay}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-unistay} -d ${POSTGRES_DB:-unistay}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://unistay:unistay@db:5432/unistay}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-86400}
+      LENCO_MOCK: ${LENCO_MOCK:-true}
+      LENCO_API_KEY: ${LENCO_API_KEY}
+      LENCO_BASE_URL: ${LENCO_BASE_URL:-https://api.lenco.co}
+      LENCO_WEBHOOK_SECRET: ${LENCO_WEBHOOK_SECRET}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    ports:
+      - "8000:8000"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
