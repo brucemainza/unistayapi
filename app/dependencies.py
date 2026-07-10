@@ -3,15 +3,15 @@
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.exceptions import AuthError
 from app.models import User
+from app.repositories.user_repo import UserRepository
+from app.services.auth_service import AuthService
 
 security = HTTPBearer(auto_error=False)
 
@@ -36,30 +36,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-async def _get_or_create_dev_user(db: AsyncSession) -> User:
-    """Return the development student user, creating it if necessary."""
-    dev_email = "dev@unistay.local"
-    dev_phone = "+233000000000"
-
-    result = await db.execute(select(User).where(User.email == dev_email))
-    user = result.scalar_one_or_none()
-    if user is not None:
-        return user
-
-    user = User(
-        full_name="Development Student",
-        phone=dev_phone,
-        email=dev_email,
-        password_hash="dev-password-not-used",
-        role="student",
-        is_verified=True,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
-
-
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
     db: AsyncSession = Depends(get_db),
@@ -75,25 +51,17 @@ async def get_current_user(
         raise AuthError()
 
     token = credentials.credentials
+    repo = UserRepository(db)
 
     if settings.environment != "production" and token == "dev-student-token":
-        return await _get_or_create_dev_user(db)
+        return await repo.get_dev_user()
 
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=["HS256"],
-        )
-    except JWTError as exc:
-        raise AuthError("Invalid or expired token") from exc
-
+    payload = AuthService.verify_token(token)
     user_id = payload.get("sub")
     if user_id is None:
         raise AuthError("Invalid token payload")
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    user = await repo.get_by_id(user_id)
     if user is None:
         raise AuthError("User not found")
 

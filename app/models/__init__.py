@@ -7,6 +7,7 @@ from app.models.house_image import HouseImage
 from app.models.landlord_payment_detail import LandlordPaymentDetail
 from app.models.nearby_university import NearbyUniversity
 from app.models.notification import Notification
+from app.models.otp import Otp
 from app.models.payment import Payment
 from app.models.room import Room
 from app.models.university import University
@@ -22,6 +23,7 @@ __all__ = [
     "LandlordPaymentDetail",
     "NearbyUniversity",
     "Notification",
+    "Otp",
     "Payment",
     "Room",
     "University",
