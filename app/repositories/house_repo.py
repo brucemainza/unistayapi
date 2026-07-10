@@ -105,6 +105,98 @@ class HouseRepository(BaseRepository):
         )
         return list(result.scalars().all())
 
+    async def search_near_university(
+        self,
+        *,
+        university_id: str,
+        radius_m: int = 3000,
+        q: str | None = None,
+        amenities: list[str] | None = None,
+        min_price: int | None = None,
+        max_price: int | None = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> tuple[list[House], int]:
+        """Return houses within ``radius_m`` of a university, sorted by distance."""
+        from app.geo import distance_km, get_dialect_name, parse_point
+
+        university_result = await self.db.execute(
+            select(University).where(University.id == university_id)
+        )
+        university = university_result.scalar_one_or_none()
+        if university is None:
+            return [], 0
+
+        campus_lat, campus_lon = parse_point(university.coords)
+        if campus_lat is None or get_dialect_name(self.db) != "postgresql":
+            houses, total = await self.search(
+                q=q,
+                amenities=amenities,
+                min_price=min_price,
+                max_price=max_price,
+                page=1,
+                limit=10000,
+            )
+            filtered: list[tuple[float, House]] = []
+            for house in houses:
+                lat, lon = parse_point(house.coords)
+                if lat is None:
+                    continue
+                dist_m = distance_km(campus_lat, campus_lon, lat, lon) * 1000
+                if dist_m <= radius_m:
+                    filtered.append((dist_m, house))
+            filtered.sort(key=lambda item: item[0])
+            total = len(filtered)
+            paginated = filtered[(page - 1) * limit : page * limit]
+            for dist_m, house in paginated:
+                house.distance_m = int(round(dist_m / 10) * 10)
+            return [house for _, house in paginated], total
+
+        campus_point = func.ST_GeogFromText(f"POINT({campus_lon} {campus_lat})")
+        distance_col = func.ST_Distance(House.coords, campus_point).label("distance_m")
+        stmt = (
+            select(House, distance_col)
+            .where(func.ST_DWithin(House.coords, campus_point, radius_m))
+            .options(
+                selectinload(House.landlord),
+                selectinload(House.university),
+                selectinload(House.amenities),
+                selectinload(House.images),
+                selectinload(House.nearby_universities),
+                selectinload(House.rooms),
+            )
+            .order_by(distance_col)
+        )
+
+        if q:
+            pattern = f"%{q}%"
+            stmt = stmt.where(
+                (House.name.ilike(pattern)) | (House.location.ilike(pattern))
+            )
+        if min_price is not None:
+            stmt = stmt.where(House.price >= min_price)
+        if max_price is not None:
+            stmt = stmt.where(House.price <= max_price)
+        if amenities:
+            amenity_subq = (
+                select(HouseAmenity.house_id)
+                .where(HouseAmenity.name.in_(amenities))
+                .group_by(HouseAmenity.house_id)
+                .having(func.count(HouseAmenity.name) == len(amenities))
+            )
+            stmt = stmt.where(House.id.in_(amenity_subq))
+
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = (await self.db.execute(count_stmt)).scalar() or 0
+
+        stmt = stmt.offset((page - 1) * limit).limit(limit)
+        result = await self.db.execute(stmt)
+        houses: list[House] = []
+        for house, dist in result.all():
+            house.distance_m = int(round(dist / 10) * 10)
+            houses.append(house)
+        return houses, total
+
     async def nearby(
         self, latitude: float, longitude: float, radius_km: float = 10
     ) -> list[House]:
