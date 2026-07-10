@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+.env
+.git
+.pytest_cache
+postgres_data
+.venv
+venv
+.mypy_cache
