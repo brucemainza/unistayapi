@@ -23,12 +23,13 @@ def room_to_dict(room: Room) -> dict:
     }
 
 
-def house_to_dict(house: House) -> dict:
+def house_to_dict(house: House, *, distance_m: int | None = None) -> dict:
     latitude, longitude = parse_point(house.coords)
-    return {
+    result = {
         "id": house.id,
         "name": house.name,
         "location": house.location,
+        "formattedAddress": house.formatted_address,
         "university": house.university.name if house.university else None,
         "universityId": house.university_id,
         "price": house.price,
@@ -47,6 +48,11 @@ def house_to_dict(house: House) -> dict:
         "latitude": latitude,
         "longitude": longitude,
     }
+    if distance_m is not None:
+        result["distanceM"] = distance_m
+    elif getattr(house, "distance_m", None) is not None:
+        result["distanceM"] = house.distance_m
+    return result
 
 
 def booking_to_dict(booking: Booking) -> dict:
