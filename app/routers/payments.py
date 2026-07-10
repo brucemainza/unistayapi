@@ -10,7 +10,7 @@ from app.repositories.booking_repo import BookingRepository
 from app.repositories.notification_repo import NotificationRepository
 from app.repositories.payment_repo import PaymentRepository
 from app.schemas.common import envelope
-from app.schemas.payment import MobileMoneyPaymentRequest
+from app.schemas.payment import CardPaymentRequest, MobileMoneyPaymentRequest
 from app.services.payment_service import PaymentService
 
 router = APIRouter()
@@ -32,6 +32,14 @@ async def initiate_mobile_money(
 ) -> dict:
     payment = await _service(db).initiate_mobile_money_payment(body)
     return envelope(True, "Payment initiated", payment)
+
+
+@router.post("/lenco/card")
+async def initiate_card(
+    body: CardPaymentRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    payment = await _service(db).initiate_card_payment(body)
+    return envelope(True, "Card payment initiated", payment)
 
 
 @router.get("/lenco/{reference}")
