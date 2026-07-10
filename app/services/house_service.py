@@ -1,7 +1,10 @@
 """House business logic."""
 
+import asyncio
+
 from sqlalchemy import delete
 
+from app.clients.google_maps_client import GoogleMapsClient
 from app.exceptions import NotFoundError
 from app.geo import point_value
 from app.models.house import House
@@ -168,6 +171,27 @@ class HouseService:
             raise NotFoundError("House not found")
         await self.house_repo.db.delete(house)
         await self.house_repo.db.commit()
+
+    async def reverse_geocode_and_update(
+        self, house_id: str, latitude: float, longitude: float
+    ) -> None:
+        """Background task: reverse-geocode pin and store formatted address."""
+        client = GoogleMapsClient()
+        address: str | None = None
+        for attempt in range(2):
+            try:
+                address = await client.reverse_geocode(latitude, longitude)
+                break
+            except Exception:
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                # Give up after one retry; log is handled by the client.
+
+        if address:
+            house = await self.house_repo.get_by_id(house_id)
+            if house is not None:
+                house.formatted_address = address
+                await self.house_repo.db.commit()
 
     async def update_amenities(self, house_id: str, amenities: list[str]) -> dict:
         """Replace the amenities list for a house."""

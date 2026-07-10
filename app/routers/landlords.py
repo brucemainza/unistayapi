@@ -1,6 +1,6 @@
 """Landlords router."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import LandlordUser, get_db
@@ -14,6 +14,7 @@ from app.schemas.common import envelope
 from app.schemas.house import AmenitiesUpdateRequest, HouseCreateRequest, HouseUpdateRequest
 from app.schemas.landlord import LandlordPaymentDetailRequest
 from app.schemas.room import RoomCreateRequest, RoomUpdateRequest
+from app.services.house_service import HouseService
 from app.services.landlord_service import LandlordService
 
 router = APIRouter()
@@ -40,10 +41,18 @@ async def my_houses(
 @router.post("/houses")
 async def create_house(
     body: HouseCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: LandlordUser,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     house = await _service(db).create_house(current_user.id, body)
+    if body.latitude is not None and body.longitude is not None:
+        background_tasks.add_task(
+            HouseService(HouseRepository(db), RoomRepository(db)).reverse_geocode_and_update,
+            house["id"],
+            body.latitude,
+            body.longitude,
+        )
     return envelope(True, "House created", house)
 
 
