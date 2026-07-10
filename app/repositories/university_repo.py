@@ -3,6 +3,7 @@
 from geoalchemy2 import Geometry
 from sqlalchemy import func, select
 
+from app.geo import get_dialect_name, parse_point
 from app.models.university import University
 from app.repositories.base import BaseRepository
 
@@ -12,6 +13,13 @@ class UniversityRepository(BaseRepository):
 
     async def list_all(self) -> list[University]:
         """Return every university with extracted latitude/longitude."""
+        if get_dialect_name(self.db) != "postgresql":
+            result = await self.db.execute(select(University).order_by(University.name))
+            universities = list(result.scalars().all())
+            for university in universities:
+                university.latitude, university.longitude = parse_point(university.coords)
+            return universities
+
         result = await self.db.execute(
             select(
                 University,

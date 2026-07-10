@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -17,6 +18,7 @@ from app.logging_config import (
 from app.routers import (
     auth,
     bookings,
+    favorites,
     houses,
     landlords,
     notifications,
@@ -46,6 +48,22 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"status": False, "message": exc.message, "data": None},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Return validation errors in the Flutter-compatible envelope."""
+    first_error = exc.errors()[0] if exc.errors() else {}
+    location = ".".join(str(item) for item in first_error.get("loc", []))
+    message = first_error.get("msg", "Validation error")
+    if location:
+        message = f"{location}: {message}"
+    return JSONResponse(
+        status_code=422,
+        content={"status": False, "message": message, "data": None},
     )
 
 
@@ -84,8 +102,10 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(universities.router, prefix="/api/universities", tags=["universities"])
 app.include_router(houses.router, prefix="/api/houses", tags=["houses"])
+app.include_router(favorites.router, prefix="/api/favorites", tags=["favorites"])
 app.include_router(bookings.router, prefix="/api/bookings", tags=["bookings"])
 app.include_router(payments.router, prefix="/api/payments", tags=["payments"])
+app.include_router(payments.webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(landlords.router, prefix="/api/landlords", tags=["landlords"])
 

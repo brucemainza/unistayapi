@@ -68,5 +68,13 @@ async def get_current_user(
     return user
 
 
+async def require_landlord(current_user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user to be a landlord."""
+    if current_user.role != "landlord":
+        raise AuthError("Landlord access required")
+    return current_user
+
+
 # Convenience alias for endpoints that require an authenticated user.
 CurrentUser = Annotated[User, Depends(get_current_user)]
+LandlordUser = Annotated[User, Depends(require_landlord)]
