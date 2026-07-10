@@ -2,6 +2,7 @@
 
 from sqlalchemy import select
 
+from app.exceptions import NotFoundError
 from app.models.user import User
 from app.repositories.base import BaseRepository
 
@@ -26,6 +27,20 @@ class UserRepository(BaseRepository):
 
     async def create(self, user: User) -> User:
         self.db.add(user)
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def update(self, user_id: str, **kwargs) -> User:
+        """Update a user's profile fields and return the refreshed user."""
+        user = await self.get_by_id(user_id)
+        if user is None:
+            raise NotFoundError("User not found")
+
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(user, key, value)
+
         await self.db.commit()
         await self.db.refresh(user)
         return user
