@@ -43,3 +43,59 @@ async def test_mobile_money_payment_and_signed_webhook(client):
     status = await client.get(f"/api/payments/lenco/{payment['reference']}")
     assert status.status_code == 200, status.text
     assert status.json()["data"]["status"] == "successful"
+
+
+async def test_card_payment_and_3ds_webhook(client):
+    card_response = await client.post(
+        "/api/payments/lenco/card",
+        json={
+            "amount": "250.00",
+            "currency": "ZMW",
+            "email": "customer@example.com",
+            "customer": {"first_name": "John", "last_name": "Doe"},
+            "billing": {
+                "street_address": "123 Main St",
+                "city": "Lusaka",
+                "postal_code": "10101",
+                "country": "ZM",
+            },
+            "card": {
+                "number": "5555555555554444",
+                "expiry_month": "12",
+                "expiry_year": "2025",
+                "cvv": "838",
+            },
+        },
+    )
+    assert card_response.status_code == 200, card_response.text
+    payment = card_response.json()["data"]
+    assert payment["amount"] == "250.00"
+    assert payment["paymentType"] == "card"
+    assert payment["status"] == "3ds-auth-required"
+    assert payment["meta"]["authorization"]["redirect"].startswith("https://mock")
+
+    previous_mock = settings.lenco_mock
+    previous_secret = settings.lenco_webhook_secret
+    settings.lenco_mock = False
+    settings.lenco_webhook_secret = "secret"
+    try:
+        payload = {
+            "event": "transaction.successful",
+            "data": {"reference": payment["reference"], "status": "successful"},
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        key = hashlib.sha256(b"secret").hexdigest().encode("utf-8")
+        signature = hmac.new(key, raw, hashlib.sha512).hexdigest()
+        webhook = await client.post(
+            "/api/webhooks/lenco",
+            content=raw,
+            headers={"X-Lenco-Signature": signature},
+        )
+        assert webhook.status_code == 200, webhook.text
+    finally:
+        settings.lenco_mock = previous_mock
+        settings.lenco_webhook_secret = previous_secret
+
+    status = await client.get(f"/api/payments/lenco/{payment['reference']}")
+    assert status.status_code == 200, status.text
+    assert status.json()["data"]["status"] == "successful"
