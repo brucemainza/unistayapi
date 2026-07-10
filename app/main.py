@@ -23,6 +23,7 @@ from app.routers import (
     landlords,
     notifications,
     payments,
+    places,
     universities,
     users,
 )
@@ -107,6 +108,7 @@ app.include_router(bookings.router, prefix="/api/bookings", tags=["bookings"])
 app.include_router(payments.router, prefix="/api/payments", tags=["payments"])
 app.include_router(payments.webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
+app.include_router(places.router, prefix="/api/places", tags=["places"])
 app.include_router(landlords.router, prefix="/api/landlords", tags=["landlords"])
 
 
