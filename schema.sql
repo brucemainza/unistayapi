@@ -11,16 +11,6 @@ CREATE TABLE alembic_version (
 INFO  [alembic.runtime.migration] Running upgrade  -> 2f0652c6fde1, initial schema
 -- Running upgrade  -> 2f0652c6fde1
 
-CREATE TABLE ad_slides (
-    title VARCHAR(255) NOT NULL, 
-    image_url VARCHAR(500) NOT NULL, 
-    active BOOLEAN NOT NULL, 
-    "order" INTEGER NOT NULL, 
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
-    id VARCHAR(36) NOT NULL, 
-    PRIMARY KEY (id)
-);
-
 CREATE TABLE universities (
     name VARCHAR(255) NOT NULL, 
     initials VARCHAR(10) NOT NULL, 

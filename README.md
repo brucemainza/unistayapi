@@ -78,6 +78,39 @@ cp .env.example .env
 | `CLOUDINARY_SECURE` | Use HTTPS delivery URLs | `true` |
 | `ENVIRONMENT` | `development`, `test`, or `production` | `development` |
 
+## System overview
+
+UniStay API is a FastAPI backend built around three layers:
+
+- **Routers** (`app/routers/`) expose REST endpoints under `/api/*` and return a Flutter-compatible JSON envelope: `{status, message, data}`.
+- **Services** (`app/services/`) contain business logic (auth, houses, bookings, payments, geo, etc.).
+- **Repositories** (`app/repositories/`) handle SQLAlchemy data access.
+- **Models** (`app/models/`) define PostgreSQL + PostGIS tables via SQLAlchemy 2.0.
+- **Clients** (`app/clients/`) wrap external APIs: Lenco (payments), Google Maps (places/ETA/static maps), Cloudinary (images), and Resend (email OTP).
+
+### Authentication
+
+- Register/login returns a JWT.
+- In non-production environments, the token `dev-student-token` is accepted as a convenience for testing.
+- Email signup uses a 6-digit OTP stored in Redis (hashed).
+- Phone OTP verification is mocked in non-production; in production it checks the `otps` table.
+
+### External integrations
+
+| Feature | Local/test | Production on Render |
+|---|---|---|
+| Payments (Lenco) | `LENCO_MOCK=true` simulates responses | Requires `LENCO_API_KEY` and `LENCO_WEBHOOK_SECRET` |
+| Google Maps | Optional; endpoints error if not configured | Required: `GOOGLE_MAPS_SERVER_KEY`; optional signing secret |
+| Redis | Optional for rate limiting/OTP in dev | Required: `REDIS_URL` |
+| Image uploads | Optional | Required: Cloudinary credentials |
+| Email OTP | Optional; skipped if no Resend key | Required: `RESEND_API_KEY` |
+
+### Database
+
+- PostgreSQL 16 + PostGIS 3.4 is required for geospatial queries.
+- Alembic migrations live in `alembic/versions/` and run automatically in the Docker entrypoint.
+- `schema.sql` / `supabase_schema.sql` are reference dumps of the full PostgreSQL schema.
+
 ## Local setup
 
 ```bash
@@ -199,9 +232,99 @@ Errors use:
 | Landlords | `GET /api/landlords/bookings` | Landlord bookings |
 | Landlords | `PATCH /api/landlords/bookings/{id}/status` | Update booking status |
 
-## Deployment
+## Deployment on Render
 
-Target: single AWS EC2 instance running Docker Compose.
+The repository includes a `Dockerfile` that runs the API directly (no Docker Compose needed). Render builds and runs this image, so nginx and the local Postgres container from `docker-compose.yml` are not used.
+
+### 1. Create a Web Service
+
+1. In Render, click **New +** → **Web Service**.
+2. Connect the `unistayapi` GitHub repository.
+3. Select **Docker** as the runtime (Render will use the `Dockerfile`).
+4. Set the service name, region, and instance type.
+
+### 2. Create a PostgreSQL database
+
+1. In Render, click **New +** → **PostgreSQL**.
+2. Copy the **External Database URL**.
+3. Note: Render Postgres does **not** include PostGIS by default. Either:
+   - Use Render's managed Postgres and run `CREATE EXTENSION postgis;` manually, or
+   - Provision a PostGIS-enabled Postgres elsewhere and point `DATABASE_URL` to it.
+
+### 3. Create a Redis instance
+
+1. Click **New +** → **Redis** (or use an external Redis provider like Upstash).
+2. Copy the connection URL.
+
+### 4. Configure environment variables
+
+In the Web Service → **Environment** tab, add at least:
+
+| Variable | Value / source |
+|---|---|
+| `ENVIRONMENT` | `production` |
+| `DATABASE_URL` | Render Postgres external URL |
+| `JWT_SECRET` | Generate a long random string |
+| `JWT_EXPIRES_IN` | `86400` |
+| `REDIS_URL` | Render Redis URL |
+| `GOOGLE_MAPS_SERVER_KEY` | Your Google Maps Platform server key |
+| `LENCO_MOCK` | `false` (when going live) or `true` (to keep testing) |
+| `LENCO_API_KEY` | From Lenco dashboard |
+| `LENCO_WEBHOOK_SECRET` | From Lenco dashboard |
+| `LENCO_BASE_URL` | `https://api.lenco.co` |
+| `RESEND_API_KEY` | From Resend dashboard |
+| `CLOUDINARY_CLOUD_NAME` | From Cloudinary dashboard |
+| `CLOUDINARY_API_KEY` | From Cloudinary dashboard |
+| `CLOUDINARY_API_SECRET` | From Cloudinary dashboard |
+| `CLOUDINARY_FOLDER` | `unistay` |
+
+The `Dockerfile` entrypoint runs `alembic upgrade head` before starting uvicorn, so migrations are applied automatically on deploy.
+
+### 5. Deploy
+
+1. Click **Create Web Service**.
+2. Render builds the image, runs migrations, and starts the API on the port it assigns via `$PORT`.
+3. Once the deploy is healthy, your API is available at the Render URL (e.g. `https://unistay-api.onrender.com`).
+
+## Testing on Render
+
+After the deploy is live:
+
+```bash
+# 1. Health check
+ curl https://your-render-url.onrender.com/api/health
+
+# 2. OpenAPI docs
+ open https://your-render-url.onrender.com/docs
+
+# 3. Register a test user
+ curl -X POST https://your-render-url.onrender.com/api/auth/register \
+   -H "Content-Type: application/json" \
+   -d '{"full_name":"Test Student","phone":"0977000001","email":"test@example.com","password":"secret123","role":"student"}'
+
+# 4. Log in
+ curl -X POST https://your-render-url.onrender.com/api/auth/login \
+   -H "Content-Type: application/json" \
+   -d '{"phone":"0977000001","password":"secret123"}'
+
+# 5. List universities
+ curl https://your-render-url.onrender.com/api/universities
+
+# 6. List houses
+ curl https://your-render-url.onrender.com/api/houses
+```
+
+### What to verify
+
+- `/api/health` returns `status: true`.
+- `/docs` loads the OpenAPI UI.
+- Auth endpoints return tokens and user data.
+- House/university endpoints return seeded data (seed universities are inserted automatically when the table is empty; sample houses can be seeded manually with the command in the Local setup section).
+- If `LENCO_MOCK=true`, payment endpoints return mock responses without needing real Lenco credentials.
+
+## AWS EC2 alternative
+
+If you prefer a VM instead of Render:
 
 1. Provision an EC2 instance and install Docker + Docker Compose.
 2. Clone the repository and copy `.env.example` to `.env`.

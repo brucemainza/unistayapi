@@ -1,4 +1,3 @@
-from app.models.ad_slide import AdSlide
 from app.models.booking import Booking
 from app.models.eta_cache import EtaCache
 from app.models.favorite import Favorite
@@ -15,7 +14,6 @@ from app.models.university import University
 from app.models.user import User
 
 __all__ = [
-    "AdSlide",
     "Booking",
     "EtaCache",
     "Favorite",
