@@ -63,6 +63,19 @@ cp .env.example .env
 | `LENCO_API_KEY` | Lenco API key (production) | optional |
 | `LENCO_BASE_URL` | Lenco API base URL | `https://api.lenco.co` |
 | `LENCO_WEBHOOK_SECRET` | Lenco webhook secret (production) | optional |
+| `GOOGLE_MAPS_SERVER_KEY` | Google Maps Platform server API key | optional (required in production) |
+| `GOOGLE_MAPS_SIGNING_SECRET` | Google Static Maps URL signing secret | optional |
+| `GOOGLE_MAPS_PLACES_REGION` | Places API region bias (ISO-3166-1 alpha-2) | `ZM` |
+| `REDIS_URL` | Redis connection URL (Upstash/Redis Cloud) | optional (required in production) |
+| `RESEND_API_KEY` | Resend transactional email API key | optional |
+| `OTP_TTL_SECONDS` | Email OTP validity window | `600` |
+| `OTP_RESEND_COOLDOWN` | Minimum seconds between OTP resends | `60` |
+| `OTP_MAX_ATTEMPTS` | Maximum OTP verification attempts per code | `5` |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name | required for image uploads |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | required for image uploads |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret | required for image uploads |
+| `CLOUDINARY_FOLDER` | Default Cloudinary folder | `unistay` |
+| `CLOUDINARY_SECURE` | Use HTTPS delivery URLs | `true` |
 | `ENVIRONMENT` | `development`, `test`, or `production` | `development` |
 
 ## Local setup
@@ -141,17 +154,26 @@ Errors use:
 | Auth | `POST /api/auth/register` | Register a student or landlord |
 | Auth | `POST /api/auth/login` | Log in with phone and password |
 | Auth | `POST /api/auth/verify-otp` | Verify 5-digit OTP |
-| Auth | `POST /api/auth/resend-otp` | Resend OTP |
+| Auth | `POST /api/auth/resend-otp` | Resend phone OTP |
+| Auth | `POST /api/auth/signup` | Sign up and send email OTP (5/min/IP) |
+| Auth | `POST /api/auth/verify-email` | Verify 6-digit email OTP |
+| Auth | `POST /api/auth/resend-email-otp` | Resend email OTP |
 | Auth | `GET /api/auth/me` | Current user profile |
 | Users | `GET /api/users/me` | Profile |
 | Users | `PATCH /api/users/me` | Update profile |
 | Users | `GET /api/users/me/stats` | User stats |
 | Universities | `GET /api/universities` | List universities |
-| Houses | `GET /api/houses` | Search/list houses |
+| Houses | `GET /api/houses` | Search/list houses (supports `university_id` + `radius_m`) |
 | Houses | `GET /api/houses/{id}` | House detail |
 | Houses | `GET /api/houses/{id}/rooms` | House rooms |
 | Houses | `GET /api/houses/{id}/similar` | Similar houses |
+| Houses | `GET /api/houses/{id}/eta` | ETA from a university (cached) |
+| Houses | `GET /api/houses/{id}/static-map` | Signed Google Static Maps image URL |
 | Houses | `GET /api/houses/nearby` | Nearby houses (PostGIS) |
+| Images | `POST /api/images/upload` | Upload a single image to Cloudinary |
+| Images | `POST /api/images/upload-multiple` | Upload multiple images to Cloudinary |
+| Places | `GET /api/places/autocomplete` | Google Places autocomplete proxy |
+| Places | `GET /api/places/details` | Google Place details proxy |
 | Favorites | `GET /api/favorites` | List favorites |
 | Favorites | `POST /api/favorites` | Add favorite |
 | Favorites | `DELETE /api/favorites/{house_id}` | Remove favorite |

@@ -104,12 +104,18 @@ async def test_places_autocomplete_field_mask(client):
         assert kwargs["session_token"] == "abc"
 
 
-async def test_static_map_url_requires_key(client, db_sessionmaker):
+async def test_static_map_url_returns_502_on_google_error(client, db_sessionmaker):
+    from app.clients.google_maps_client import GoogleMapsError
+
     house = await _get_house(db_sessionmaker)
     if house is None:
         pytest.skip("No seeded house available")
 
-    response = await client.get(f"/api/houses/{house.id}/static-map")
+    with patch(
+        "app.services.geo_service.GoogleMapsClient.static_map_url",
+        side_effect=GoogleMapsError("Google Maps error"),
+    ):
+        response = await client.get(f"/api/houses/{house.id}/static-map")
     # GoogleMapsError maps to 502 with a Flutter-compatible envelope.
     assert response.status_code == 502
     assert response.json()["status"] is False

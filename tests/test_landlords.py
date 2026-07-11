@@ -1,5 +1,7 @@
 """Tests for landlord management endpoints."""
 
+from unittest.mock import AsyncMock, patch
+
 from tests.conftest import register_user
 
 
@@ -9,18 +11,25 @@ async def test_landlord_house_room_payment_details_and_booking_flow(
     landlord = await register_user(client, unique_user_payload("landlord"))
     landlord_headers = {"Authorization": f"Bearer {landlord['token']}"}
 
-    created = await client.post(
-        "/api/landlords/houses",
-        headers=landlord_headers,
-        json={
-            "name": "Landlord Test House",
-            "location": "Lusaka",
-            "price": 1300,
-            "available_spaces": 2,
-            "amenities": ["WiFi"],
-            "rooms": [{"type": "Single", "rent": 1300, "available": 2}],
-        },
-    )
+    with patch(
+        "app.services.house_service.GoogleMapsClient.reverse_geocode",
+        new_callable=AsyncMock,
+    ) as mock_reverse:
+        mock_reverse.return_value = "123 Main St, Lusaka, Zambia"
+        created = await client.post(
+            "/api/landlords/houses",
+            headers=landlord_headers,
+            json={
+                "name": "Landlord Test House",
+                "location": "Lusaka",
+                "latitude": -15.4167,
+                "longitude": 28.2833,
+                "price": 1300,
+                "available_spaces": 2,
+                "amenities": ["WiFi"],
+                "rooms": [{"type": "Single", "rent": 1300, "available": 2}],
+            },
+        )
     assert created.status_code == 200, created.text
     house = created.json()["data"]
 

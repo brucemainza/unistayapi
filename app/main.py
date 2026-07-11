@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.dependencies import close_redis
 from app.exceptions import AppError
 from app.logging_config import (
     generate_correlation_id,
@@ -20,6 +21,7 @@ from app.routers import (
     bookings,
     favorites,
     houses,
+    images,
     landlords,
     notifications,
     payments,
@@ -37,6 +39,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     logger.info("UniStay API starting", extra={"environment": settings.environment})
     yield
+    await close_redis()
     logger.info("UniStay API shutting down")
 
 
@@ -103,6 +106,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(universities.router, prefix="/api/universities", tags=["universities"])
 app.include_router(houses.router, prefix="/api/houses", tags=["houses"])
+app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(favorites.router, prefix="/api/favorites", tags=["favorites"])
 app.include_router(bookings.router, prefix="/api/bookings", tags=["bookings"])
 app.include_router(payments.router, prefix="/api/payments", tags=["payments"])

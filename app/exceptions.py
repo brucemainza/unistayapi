@@ -37,3 +37,8 @@ class ValidationError(AppError):
 class LencoError(AppError):
     def __init__(self, message: str = "Payment provider error", status_code: int = 502):
         super().__init__(message, status_code)
+
+
+class RateLimitError(AppError):
+    def __init__(self, message: str = "Rate limit exceeded"):
+        super().__init__(message, 429)

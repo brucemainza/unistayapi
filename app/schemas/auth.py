@@ -25,6 +25,15 @@ class ResendOtpRequest(BaseModel):
     user_id: str
 
 
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., pattern=r"^\d{6}$")
+
+
+class ResendEmailOtpRequest(BaseModel):
+    email: EmailStr
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -34,6 +43,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
     is_verified: bool
+    email_verified: bool
 
 
 class TokenResponse(BaseModel):

@@ -3,6 +3,7 @@
 import random
 from collections.abc import AsyncGenerator, Callable
 
+import fakeredis
 import httpx
 import pytest
 import pytest_asyncio
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - register SQLAlchemy models
 from app.config import settings
-from app.dependencies import get_db
+from app.dependencies import get_db, get_redis
 from app.main import app
 from app.models.base import Base
 from app.seed import seed_sample_data
@@ -55,10 +56,24 @@ async def db_sessionmaker() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
 
 
 @pytest_asyncio.fixture
-async def client(db_sessionmaker):
+def fake_redis():
+    return fakeredis.FakeAsyncRedis(decode_responses=True)
+
+
+@pytest_asyncio.fixture
+async def client(db_sessionmaker, fake_redis):
+    async def override_get_redis() -> AsyncGenerator[fakeredis.FakeAsyncRedis, None]:
+        yield fake_redis
+
+    app.dependency_overrides[get_redis] = override_get_redis
     transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-        yield c
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_redis, None)
 
 
 @pytest.fixture

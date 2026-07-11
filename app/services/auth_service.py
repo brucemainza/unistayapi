@@ -46,8 +46,8 @@ class AuthService:
         except JWTError as exc:
             raise AuthError("Invalid or expired token") from exc
 
-    async def register(self, request: RegisterRequest) -> dict:
-        """Create a new user account and return an access token."""
+    async def create_user(self, request: RegisterRequest) -> User:
+        """Create and persist a new unverified user account."""
         exists = await self.user_repo.exists_by_phone_or_email(
             request.phone, request.email
         )
@@ -61,8 +61,13 @@ class AuthService:
             password_hash=pwd_context.hash(request.password),
             role=request.role,
             is_verified=False,
+            email_verified=False,
         )
-        user = await self.user_repo.create(user)
+        return await self.user_repo.create(user)
+
+    async def register(self, request: RegisterRequest) -> dict:
+        """Create a new user account and return an access token."""
+        user = await self.create_user(request)
         token = self.create_access_token({"sub": user.id})
         return {"token": token, "user": self._user_to_dict(user)}
 

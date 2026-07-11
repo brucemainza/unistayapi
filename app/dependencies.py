@@ -1,8 +1,9 @@
-"""FastAPI dependencies: database sessions and authentication."""
+"""FastAPI dependencies: database sessions, Redis, and authentication."""
 
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
+import redis.asyncio as aioredis
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -24,6 +25,38 @@ async_session: async_sessionmaker[AsyncSession] = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+_redis_pool: aioredis.Redis | None = None
+
+
+def _get_redis_pool() -> aioredis.Redis:
+    """Return the shared async Redis connection pool, creating it on demand."""
+    global _redis_pool
+    if _redis_pool is None:
+        if not settings.redis_url:
+            raise RuntimeError("REDIS_URL is not configured")
+        _redis_pool = aioredis.Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+        )
+    return _redis_pool
+
+
+async def close_redis() -> None:
+    """Close the shared Redis pool, if it was opened."""
+    global _redis_pool
+    if _redis_pool is not None:
+        await _redis_pool.close()
+        _redis_pool = None
+
+
+async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
+    """Yield the shared async Redis client for a single request."""
+    client = _get_redis_pool()
+    try:
+        yield client
+    finally:
+        pass
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
