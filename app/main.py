@@ -1,11 +1,13 @@
 """UniStay FastAPI application entry point."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.clients.google_maps_client import GoogleMapsClient
 from app.config import settings
 from app.dependencies import close_redis
 from app.exceptions import AppError
@@ -38,6 +40,23 @@ setup_logging()
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     logger.info("UniStay API starting", extra={"environment": settings.environment})
+    settings.validate_for_environment(logger)
+    degraded_maps = {"routes": False, "places": False}
+    try:
+        app.state.maps_health = await asyncio.wait_for(
+            GoogleMapsClient().health_check(), timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Google Maps startup health check timed out after 5s; degrading"
+        )
+        app.state.maps_health = degraded_maps
+    except Exception as exc:
+        logger.warning(
+            "Google Maps startup health check raised; degrading",
+            extra={"error": type(exc).__name__, "message": str(exc)},
+        )
+        app.state.maps_health = degraded_maps
     yield
     await close_redis()
     logger.info("UniStay API shutting down")
@@ -119,11 +138,13 @@ app.include_router(landlords.router, prefix="/api/landlords", tags=["landlords"]
 @app.get("/api/health")
 async def health_check() -> dict:
     """Return service health status."""
+    maps_health = getattr(app.state, "maps_health", {"routes": False, "places": False})
     return {
         "status": True,
         "message": "OK",
         "data": {
             "environment": settings.environment,
             "lenco_mock": settings.lenco_mock,
+            "google_maps": maps_health,
         },
     }
