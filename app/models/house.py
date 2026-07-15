@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db_types import GeoPoint
@@ -9,6 +9,9 @@ from app.models.base import Base
 
 class House(Base):
     __tablename__ = "houses"
+    __table_args__ = (
+        Index("idx_houses_coords", "coords", postgresql_using="gist"),
+    )
 
     landlord_id: Mapped[str] = mapped_column(
         ForeignKey("users.id"), nullable=False
@@ -32,6 +35,12 @@ class House(Base):
     )
     payment_methods: Mapped[list[str]] = mapped_column(
         JSON, default=list, nullable=False
+    )
+    is_deleted: Mapped[bool] = mapped_column(
+        default=False, nullable=False, index=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False

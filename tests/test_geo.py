@@ -5,9 +5,20 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from app.geo import parse_point
 from app.models.eta_cache import EtaCache
 from app.models.house import House
 from app.models.university import University
+
+
+def test_parse_point_decodes_postgis_wkb_element():
+    class WkbLike:
+        data = bytes.fromhex("0101000000d9cef753e3553c40295c8fc2f5c82ec0")
+
+    latitude, longitude = parse_point(WkbLike())
+
+    assert latitude == pytest.approx(-15.3925)
+    assert longitude == pytest.approx(28.3355)
 
 
 async def _get_university(db_sessionmaker):
@@ -89,6 +100,38 @@ async def test_eta_cache_miss_calls_google(client, db_sessionmaker):
         assert cache.distance_m == 1500
 
 
+async def test_eta_accepts_routes_api_v2_flat_response(client, db_sessionmaker):
+    university = await _get_university(db_sessionmaker)
+    if university is None:
+        pytest.skip("No seeded university available")
+
+    house = await _get_house(db_sessionmaker)
+    if house is None:
+        pytest.skip("No seeded house available")
+
+    with patch(
+        "app.clients.google_maps_client.GoogleMapsClient.compute_route_matrix",
+        new_callable=AsyncMock,
+    ) as mock:
+        mock.return_value = [
+            {
+                "originIndex": 0,
+                "destinationIndex": 0,
+                "duration": "420s",
+                "distanceMeters": 950,
+                "condition": "ROUTE_EXISTS",
+            }
+        ]
+        response = await client.get(
+            f"/api/houses/{house.id}/eta?university_id={university.id}&mode=WALK"
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["durationS"] == 420
+    assert data["distanceM"] == 950
+
+
 async def test_places_autocomplete_field_mask(client):
     with patch(
         "app.clients.google_maps_client.GoogleMapsClient.autocomplete",
@@ -104,7 +147,7 @@ async def test_places_autocomplete_field_mask(client):
         assert kwargs["session_token"] == "abc"
 
 
-async def test_static_map_url_returns_502_on_google_error(client, db_sessionmaker):
+async def test_static_map_image_returns_502_on_google_error(client, db_sessionmaker):
     from app.clients.google_maps_client import GoogleMapsError
 
     house = await _get_house(db_sessionmaker)
@@ -112,13 +155,33 @@ async def test_static_map_url_returns_502_on_google_error(client, db_sessionmake
         pytest.skip("No seeded house available")
 
     with patch(
-        "app.services.geo_service.GoogleMapsClient.static_map_url",
-        side_effect=GoogleMapsError("Google Maps error"),
-    ):
+        "app.services.geo_service.GoogleMapsClient.fetch_static_map",
+        new_callable=AsyncMock,
+    ) as mock:
+        mock.side_effect = GoogleMapsError("Google Maps error")
         response = await client.get(f"/api/houses/{house.id}/static-map")
     # GoogleMapsError maps to 502 with a Flutter-compatible envelope.
     assert response.status_code == 502
     assert response.json()["status"] is False
+
+
+async def test_static_map_proxies_image_without_returning_a_google_url(
+    client, db_sessionmaker
+):
+    house = await _get_house(db_sessionmaker)
+    if house is None:
+        pytest.skip("No seeded house available")
+
+    with patch(
+        "app.services.geo_service.GoogleMapsClient.fetch_static_map",
+        new_callable=AsyncMock,
+    ) as mock:
+        mock.return_value = (b"png-bytes", "image/png")
+        response = await client.get(f"/api/houses/{house.id}/static-map")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == b"png-bytes"
 
 
 async def test_listing_creation_schedules_background_geocode(

@@ -20,6 +20,9 @@ class Payment(Base):
     booking_id: Mapped[str | None] = mapped_column(
         ForeignKey("bookings.id"), nullable=True
     )
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(
         String(3), default="ZMW", nullable=False
@@ -34,6 +37,12 @@ class Payment(Base):
     )
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSON, default=dict, nullable=False
+    )
+    last_event_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+    receipt_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False

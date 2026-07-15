@@ -1,5 +1,7 @@
 # UniStay Backend Design
 
+> Historical design artifact. The verified current contract is maintained in `README.md` and `API_REFERENCE.md`; earlier mock-only implementation notes in this document are not production guidance.
+
 ## Status
 
 Approved by user on 2026-07-10.

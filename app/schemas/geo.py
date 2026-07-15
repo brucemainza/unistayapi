@@ -19,12 +19,6 @@ class EtaResponse(BaseModel):
     cached: bool
 
 
-class StaticMapResponse(BaseModel):
-    """Static map URL response."""
-
-    url: str
-
-
 class AutocompleteSuggestion(BaseModel):
     """A single autocomplete suggestion."""
 

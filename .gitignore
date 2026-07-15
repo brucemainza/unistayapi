@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+*.db
 .pytest_cache/
 .mypy_cache/
 postgres_data/

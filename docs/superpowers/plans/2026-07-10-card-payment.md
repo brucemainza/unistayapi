@@ -1,5 +1,7 @@
 # Card Payment Implementation Plan
 
+> Historical planning artifact. The verified current contract is maintained in `README.md` and `API_REFERENCE.md`; payments now require student authentication, use `LENCO_MOCK=false` outside isolated tests, and receipt delivery is triggered only after successful reconciliation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Lenco card collection support to the UniStay backend so students can pay with debit/credit cards.

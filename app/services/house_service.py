@@ -131,7 +131,9 @@ class HouseService:
             for nu in request.nearby_universities
         ]
 
-        house = await self.house_repo.create(house)
+        # Stage the house (and its cascade-orphan children) without committing.
+        self.house_repo.db.add(house)
+        await self.house_repo.flush()
 
         if self.room_repo is not None:
             for room_data in request.rooms:
@@ -144,7 +146,10 @@ class HouseService:
                     features=room_data.get("features", []),
                 )
                 self.room_repo.db.add(room)
-            await self.room_repo.db.commit()
+
+        # Single atomic commit for house, amenities, images, rooms, etc.
+        await self.house_repo.db.commit()
+        await self.house_repo.db.refresh(house)
 
         return await self.get_house(house.id)
 
@@ -165,11 +170,14 @@ class HouseService:
         return house_to_dict(house)
 
     async def delete_house(self, house_id: str) -> None:
-        """Delete a house and its related records (cascade)."""
+        """Soft-delete a house so related records (rooms, bookings) stay intact."""
+        from datetime import datetime, timezone
+
         house = await self.house_repo.get_by_id(house_id)
         if house is None:
             raise NotFoundError("House not found")
-        await self.house_repo.db.delete(house)
+        house.is_deleted = True
+        house.deleted_at = datetime.now(timezone.utc)
         await self.house_repo.db.commit()
 
     async def reverse_geocode_and_update(

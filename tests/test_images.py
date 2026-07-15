@@ -2,6 +2,10 @@
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from app.clients import cloudinary_client
+from app.clients.cloudinary_client import CloudinaryError
 from tests.conftest import register_user
 
 
@@ -86,3 +90,22 @@ async def test_upload_requires_authentication(client):
     )
     assert response.status_code == 401
     assert response.json()["status"] is False
+
+
+@pytest.mark.asyncio
+async def test_upload_image_raises_generic_cloudinary_error(monkeypatch):
+    monkeypatch.setattr(cloudinary_client.settings, "cloudinary_cloud_name", "root")
+    monkeypatch.setattr(cloudinary_client.settings, "cloudinary_api_key", "test-key")
+    monkeypatch.setattr(
+        cloudinary_client.settings, "cloudinary_api_secret", "test-secret"
+    )
+
+    with patch(
+        "app.clients.cloudinary_client.cloudinary.uploader.upload",
+        side_effect=Exception("AuthorizationRequired: Invalid cloud_name root"),
+    ):
+        with pytest.raises(CloudinaryError) as exc_info:
+            await cloudinary_client.upload_image(b"fake-bytes", "house.jpg")
+
+    assert str(exc_info.value) == "Cloudinary upload failed"
+    assert "Invalid cloud_name" not in str(exc_info.value)

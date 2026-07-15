@@ -21,6 +21,18 @@ class NotificationRepository(BaseRepository):
         await self.db.refresh(notification)
         return notification
 
+    async def add(self, notification: Notification) -> Notification:
+        """Stage a new notification without committing (unit-of-work friendly)."""
+        self.db.add(notification)
+        await self.db.flush()
+        return notification
+
+    async def commit_and_refresh(self, notification: Notification) -> Notification:
+        """Commit the transaction and refresh the notification instance."""
+        await self.db.commit()
+        await self.db.refresh(notification)
+        return notification
+
     async def mark_read(self, user_id: str, notification_id: str) -> Notification | None:
         result = await self.db.execute(
             select(Notification).where(

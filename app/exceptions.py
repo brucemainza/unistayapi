@@ -39,6 +39,11 @@ class LencoError(AppError):
         super().__init__(message, status_code)
 
 
+class DeliveryError(AppError):
+    def __init__(self, message: str = "Email delivery failed"):
+        super().__init__(message, 502)
+
+
 class RateLimitError(AppError):
     def __init__(self, message: str = "Rate limit exceeded"):
         super().__init__(message, 429)

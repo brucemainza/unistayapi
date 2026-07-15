@@ -2,44 +2,61 @@
 
 FastAPI backend for UniStay, a boarding-house discovery and landlord-management app.
 
+Current status: the automated suite is green with 43 passing and 4 optional PostGIS tests skipped when no isolated integration database is configured. A GitHub Actions CI workflow runs the suite on every push to `dev` and `main`.
+
 ## Tech stack
 
 - **Framework:** FastAPI (Python 3.12+)
-- **Database:** PostgreSQL 16 + PostGIS 3.4
+- **Database:** PostgreSQL 16 + PostGIS 3.4 (Supabase in production, local via Docker)
 - **ORM:** SQLAlchemy 2.0 (async)
-- **Migrations:** Alembic
+- **Migrations:** Alembic (auto-ran at container start)
 - **Validation:** Pydantic v2
 - **Settings:** pydantic-settings
-- **Auth:** bcrypt + python-jose (JWT)
+- **Auth:** bcrypt + HS256 JWT signing
 - **HTTP client:** httpx
-- **Container:** Docker + Docker Compose
-- **Reverse proxy:** nginx
-- **Testing:** pytest + pytest-asyncio
+- **Container:** Docker + Docker Compose (local); Docker-only on Render
+- **Reverse proxy:** nginx (local only; Render handles routing natively)
+- **Testing:** pytest + pytest-asyncio + GitHub Actions CI
+- **Email:** Resend (transactional OTP emails)
+
+## Current system highlights
+
+- Startup health checks probe Google Routes API and Google Places API with a 25-second timeout. `/api/health` returns HTTP 503 until PostgreSQL, Redis, Routes, and Places are all healthy.
+- Cloudinary image uploads are working against the configured account and support both single and multiple file uploads.
+- Landlord house deletion is implemented as a soft delete and hidden from public search/list/detail flows.
+- External API failures are logged server-side with upstream details while the client receives a clean application error.
+- The initial Alembic migration runs `CREATE EXTENSION IF NOT EXISTS postgis` ensuring fresh Supabase projects are ready without manual SQL.
+- CI runs the test suite on GitHub Actions for every push and PR.
 
 ## Project structure
 
 ```
 UNISTAY API/
-├── alembic/              # Alembic migrations
+├── .github/workflows/ci.yml   # CI pipeline
+├── alembic/                   # Alembic migrations
 ├── app/
-│   ├── main.py           # FastAPI app
-│   ├── config.py         # pydantic-settings
-│   ├── dependencies.py   # DI wiring
-│   ├── exceptions.py     # typed exceptions
-│   ├── logging_config.py # structured logging
-│   ├── models/           # SQLAlchemy models
-│   ├── schemas/          # Pydantic schemas
-│   ├── repositories/     # data access layer
-│   ├── services/         # business logic
-│   ├── routers/          # API endpoints
-│   ├── clients/          # external API clients
-│   └── seed.py           # development seed data
-├── tests/                # pytest suite
+│   ├── main.py                # FastAPI app
+│   ├── config.py              # pydantic-settings
+│   ├── dependencies.py        # DI wiring
+│   ├── exceptions.py          # typed exceptions
+│   ├── logging_config.py      # structured logging
+│   ├── models/                # SQLAlchemy models
+│   ├── schemas/               # Pydantic schemas
+│   ├── repositories/          # data access layer
+│   ├── services/              # business logic
+│   ├── routers/               # API endpoints
+│   ├── clients/               # external API clients
+│   └── seed.py                # development seed data
+├── tests/                     # pytest suite + PostGIS integration tests
+├── scripts/
+│   ├── capture_api_responses.py  # capture responses (local + remote)
+│   └── render_deploy_check.py    # smoke-test any Render deploy
 ├── docker-compose.yml
 ├── Dockerfile
 ├── nginx.conf
 ├── alembic.ini
 ├── pyproject.toml
+├── API_REFERENCE.md           # mobile-facing endpoint reference
 └── .env.example
 ```
 
@@ -59,22 +76,23 @@ cp .env.example .env
 | `POSTGRES_PASSWORD` | PostgreSQL password | `unistay` |
 | `JWT_SECRET` | Secret key for JWT signing | **required** |
 | `JWT_EXPIRES_IN` | JWT expiry in seconds | `86400` |
-| `LENCO_MOCK` | Run Lenco payments in mock mode | `true` |
-| `LENCO_API_KEY` | Lenco API key (production) | optional |
+| `LENCO_MOCK` | Must be `false` outside isolated tests | `false` |
+| `LENCO_API_KEY` | Lenco sandbox or production API key | required in production |
 | `LENCO_BASE_URL` | Lenco API base URL | `https://api.lenco.co` |
-| `LENCO_WEBHOOK_SECRET` | Lenco webhook secret (production) | optional |
-| `GOOGLE_MAPS_SERVER_KEY` | Google Maps Platform server API key | optional (required in production) |
-| `GOOGLE_MAPS_SIGNING_SECRET` | Google Static Maps URL signing secret | optional |
+| `LENCO_WEBHOOK_SECRET` | Lenco webhook signing secret | required in production |
+| `GOOGLE_MAPS_SERVER_KEY` | Google Maps Platform server API key | required in production |
+| `GOOGLE_MAPS_SIGNING_SECRET` | Optional server-side Google Static Maps URL signing secret | optional |
 | `GOOGLE_MAPS_PLACES_REGION` | Places API region bias (ISO-3166-1 alpha-2) | `ZM` |
-| `REDIS_URL` | Redis connection URL (Upstash/Redis Cloud) | optional (required in production) |
-| `RESEND_API_KEY` | Resend transactional email API key | optional |
+| `REDIS_URL` | Redis connection URL | required in production |
+| `RESEND_API_KEY` | Resend transactional email API key | required in production |
+| `RESEND_FROM_EMAIL` | Verified Resend sender address | `UniStay <no-reply@mainzabruce.online>` |
 | `OTP_TTL_SECONDS` | Email OTP validity window | `600` |
 | `OTP_RESEND_COOLDOWN` | Minimum seconds between OTP resends | `60` |
 | `OTP_MAX_ATTEMPTS` | Maximum OTP verification attempts per code | `5` |
 | `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name | required for image uploads |
 | `CLOUDINARY_API_KEY` | Cloudinary API key | required for image uploads |
 | `CLOUDINARY_API_SECRET` | Cloudinary API secret | required for image uploads |
-| `CLOUDINARY_FOLDER` | Default Cloudinary folder | `unistay` |
+| `CLOUDINARY_FOLDER` | Default Cloudinary folder used for uploads | `unistay` |
 | `CLOUDINARY_SECURE` | Use HTTPS delivery URLs | `true` |
 | `ENVIRONMENT` | `development`, `test`, or `production` | `development` |
 
@@ -88,33 +106,40 @@ UniStay API is a FastAPI backend built around three layers:
 - **Models** (`app/models/`) define PostgreSQL + PostGIS tables via SQLAlchemy 2.0.
 - **Clients** (`app/clients/`) wrap external APIs: Lenco (payments), Google Maps (places/ETA/static maps), Cloudinary (images), and Resend (email OTP).
 
+### Validation and startup behavior
+
+- The app probes Google Maps at startup with a 25-second timeout. A failed probe is visible in `/api/health` and makes that endpoint return HTTP 503, preventing a load balancer from treating a degraded deployment as ready.
+- `/api/health` verifies PostgreSQL and Redis on each request in addition to reporting the Maps startup snapshot.
+- Cloudinary uploads require all three credentials and use the configured folder from `CLOUDINARY_FOLDER`.
+
 ### Authentication
 
 - Register/login returns a JWT.
 - In non-production environments, the token `dev-student-token` is accepted as a convenience for testing.
-- Email signup uses a 6-digit OTP stored in Redis (hashed).
-- Phone OTP verification is mocked in non-production; in production it checks the `otps` table.
+- **Account OTP path:** `register` sends a 5-digit code to the registered email through Resend. Codes are HMAC-hashed in PostgreSQL, expire after 10 minutes, and lock after five failed attempts.
+- **Email-OTP path:** `signup` sends a 6-digit email OTP through Resend. Redis stores only a hash, enforces a five-attempt cap and a 60-second cooldown, and the endpoint returns 502 when Resend does not accept delivery.
 
 ### External integrations
 
 | Feature | Local/test | Production on Render |
 |---|---|---|
-| Payments (Lenco) | `LENCO_MOCK=true` simulates responses | Requires `LENCO_API_KEY` and `LENCO_WEBHOOK_SECRET` |
+| Payments (Lenco) | Use explicit test/sandbox credentials for manual sweeps | Requires `LENCO_MOCK=false`, `LENCO_API_KEY`, and `LENCO_WEBHOOK_SECRET` |
 | Google Maps | Optional; endpoints error if not configured | Required: `GOOGLE_MAPS_SERVER_KEY`; optional signing secret |
-| Redis | Optional for rate limiting/OTP in dev | Required: `REDIS_URL` |
+| Redis | Optional for rate limiting/OTP in dev | Required: `REDIS_URL` (Upstash) |
 | Image uploads | Optional | Required: Cloudinary credentials |
-| Email OTP | Optional; skipped if no Resend key | Required: `RESEND_API_KEY` |
+| Email OTP | Mocked only in isolated tests | Required: `RESEND_API_KEY` and a verified sender; delivery failures return 502 |
 
 ### Database
 
 - PostgreSQL 16 + PostGIS 3.4 is required for geospatial queries.
 - Alembic migrations live in `alembic/versions/` and run automatically in the Docker entrypoint.
+- The initial migration runs `CREATE EXTENSION IF NOT EXISTS postgis` — Supabase or any PostGIS-enabled host is ready without manual SQL.
 - `schema.sql` / `supabase_schema.sql` are reference dumps of the full PostgreSQL schema.
 
 ## Local setup
 
 ```bash
-# 1. Clone/copy the project and enter the directory
+# 1. Clone the project and enter the directory
 cd "UNISTAY API"
 
 # 2. Create environment file
@@ -123,14 +148,22 @@ cp .env.example .env
 
 # 3. Start the stack
 docker compose up --build -d
+# The API entrypoint runs alembic upgrade head automatically, then starts uvicorn.
 
-# 4. Run migrations (only needed if not using the image CMD)
-docker compose exec api alembic upgrade head
+# 4. Seed sample data (optional)
+docker compose exec api python -c "
+import asyncio
+from app.dependencies import async_session
+from app.seed import seed_sample_data
 
-# 5. Seed sample data (optional)
-docker compose exec api python -c "from app.dependencies import async_session; from app.seed import seed_sample_data; import asyncio; asyncio.run(seed_sample_data(next(iter(async_session()))))"
+async def main():
+    async with async_session() as session:
+        await seed_sample_data(session)
 
-# 6. Visit the docs
+asyncio.run(main())
+"
+
+# 5. Visit the docs
 curl http://localhost/api/health
 # OpenAPI docs: http://localhost/docs
 ```
@@ -151,20 +184,29 @@ docker compose exec api alembic upgrade head
 
 ## Tests
 
-The test suite runs inside the API container against an in-memory SQLite database:
+### Local test suite (SQLite + fakeredis)
 
 ```bash
-docker compose exec api pytest
-```
-
-To run tests locally (requires Python 3.12+ and dependencies):
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# Inside a venv with dev deps installed
 pip install -e ".[dev]"
-pytest
+ENVIRONMENT=test pytest
 ```
+
+The test suite uses an in-memory SQLite database and `fakeredis`. The verified local result is **43 passed, 4 skipped**; skipped tests require `UNISTAY_INTEGRATION_DB_URL`.
+
+### PostGIS integration tests (optional)
+
+```bash
+# Requires a live Postgres + PostGIS database (e.g., Supabase staging)
+export UNISTAY_INTEGRATION_DB_URL="postgresql+asyncpg://..."
+ENVIRONMENT=test pytest tests/test_postgis_integration.py -v
+```
+
+Set `UNISTAY_INTEGRATION_DB_URL` to a live Postgres+PostGIS database (e.g., a Supabase staging project). Without the variable the integration tests are skipped.
+
+### CI (GitHub Actions)
+
+A `.github/workflows/ci.yml` runs on every push and PR to `dev` and `main`. The default SQLite suite runs in seconds. If the repository secret `SUPABASE_TEST_DB_URL` is configured, the PostGIS integration suite also runs automatically.
 
 ## API overview
 
@@ -180,147 +222,143 @@ Errors use:
 { "status": false, "message": "...", "data": null }
 ```
 
-### Endpoints
+### Full endpoint reference
 
-| Group | Endpoint | Description |
-|---|---|---|
-| Auth | `POST /api/auth/register` | Register a student or landlord |
-| Auth | `POST /api/auth/login` | Log in with phone and password |
-| Auth | `POST /api/auth/verify-otp` | Verify 5-digit OTP |
-| Auth | `POST /api/auth/resend-otp` | Resend phone OTP |
-| Auth | `POST /api/auth/signup` | Sign up and send email OTP (5/min/IP) |
-| Auth | `POST /api/auth/verify-email` | Verify 6-digit email OTP |
-| Auth | `POST /api/auth/resend-email-otp` | Resend email OTP |
-| Auth | `GET /api/auth/me` | Current user profile |
-| Users | `GET /api/users/me` | Profile |
-| Users | `PATCH /api/users/me` | Update profile |
-| Users | `GET /api/users/me/stats` | User stats |
-| Universities | `GET /api/universities` | List universities |
-| Houses | `GET /api/houses` | Search/list houses (supports `university_id` + `radius_m`) |
-| Houses | `GET /api/houses/{id}` | House detail |
-| Houses | `GET /api/houses/{id}/rooms` | House rooms |
-| Houses | `GET /api/houses/{id}/similar` | Similar houses |
-| Houses | `GET /api/houses/{id}/eta` | ETA from a university (cached) |
-| Houses | `GET /api/houses/{id}/static-map` | Signed Google Static Maps image URL |
-| Houses | `GET /api/houses/nearby` | Nearby houses (PostGIS) |
-| Images | `POST /api/images/upload` | Upload a single image to Cloudinary |
-| Images | `POST /api/images/upload-multiple` | Upload multiple images to Cloudinary |
-| Places | `GET /api/places/autocomplete` | Google Places autocomplete proxy |
-| Places | `GET /api/places/details` | Google Place details proxy |
-| Favorites | `GET /api/favorites` | List favorites |
-| Favorites | `POST /api/favorites` | Add favorite |
-| Favorites | `DELETE /api/favorites/{house_id}` | Remove favorite |
-| Bookings | `POST /api/bookings` | Create booking |
-| Bookings | `GET /api/bookings` | List bookings |
-| Bookings | `GET /api/bookings/{id}/receipt` | Booking receipt |
-| Bookings | `PATCH /api/bookings/{id}/status` | Update booking status |
-| Payments | `POST /api/payments/lenco/mobile-money` | Initiate payment |
-| Payments | `GET /api/payments/lenco/{reference}` | Payment status |
-| Payments | `POST /api/webhooks/lenco` | Lenco webhook |
-| Notifications | `GET /api/notifications` | List notifications |
-| Notifications | `PATCH /api/notifications/{id}/read` | Mark as read |
-| Landlords | `GET /api/landlords/me/houses` | Landlord houses |
-| Landlords | `POST /api/landlords/houses` | Create house |
-| Landlords | `PATCH /api/landlords/houses/{id}` | Update house |
-| Landlords | `DELETE /api/landlords/houses/{id}` | Delete house |
-| Landlords | `POST /api/landlords/houses/{id}/rooms` | Add room |
-| Landlords | `PATCH /api/landlords/houses/{id}/rooms/{room_id}` | Update room |
-| Landlords | `DELETE /api/landlords/houses/{id}/rooms/{room_id}` | Delete room |
-| Landlords | `PATCH /api/landlords/houses/{id}/amenities` | Update amenities |
-| Landlords | `GET /api/landlords/payment-details` | Get payment details |
-| Landlords | `PUT /api/landlords/payment-details` | Save payment details |
-| Landlords | `GET /api/landlords/bookings` | Landlord bookings |
-| Landlords | `PATCH /api/landlords/bookings/{id}/status` | Update booking status |
+See **[API_REFERENCE.md](API_REFERENCE.md)** — this is the mobile-facing reference with every endpoint catalogued, request/response shapes, auth requirements, casing conventions, nullable fields, rate limits, error messages, and a one-page mobile integration checklist.
+
+### Quick endpoint list
+
+| Group | Endpoints |
+|---|---|
+| Auth | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/verify-otp`, `POST /api/auth/resend-otp`, `POST /api/auth/signup`, `POST /api/auth/verify-email`, `POST /api/auth/resend-email-otp` |
+| Users | `GET /api/users/me`, `PATCH /api/users/me`, `GET /api/users/me/stats` |
+| Universities | `GET /api/universities` |
+| Houses | `GET /api/houses` (list + geospatial search), `GET /api/houses/{id}`, `GET /api/houses/{id}/rooms`, `GET /api/houses/{id}/similar`, `GET /api/houses/{id}/eta`, `GET /api/houses/{id}/static-map`, `GET /api/houses/nearby` |
+| Images | `POST /api/images/upload`, `POST /api/images/upload-multiple` |
+| Places | `GET /api/places/autocomplete`, `GET /api/places/details` |
+| Favorites | `GET /api/favorites`, `POST /api/favorites`, `DELETE /api/favorites/{house_id}` |
+| Bookings | `POST /api/bookings`, `GET /api/bookings`, `GET /api/bookings/{id}/receipt`, `GET /api/bookings/{id}/receipt.pdf`, `POST /api/bookings/{id}/receipt/email`, `PATCH /api/bookings/{id}/status` |
+| Payments | Student-authenticated `POST /api/payments/lenco/mobile-money`, `POST /api/payments/lenco/card`, `GET /api/payments/lenco/{reference}`, `POST /api/webhooks/lenco` |
+| Notifications | `GET /api/notifications`, `PATCH /api/notifications/{id}/read`, `PATCH /api/notifications/read-all` |
+| Landlords | `GET /api/landlords/me/houses`, `POST|PATCH|DELETE /api/landlords/houses`, `POST|PATCH|DELETE /api/landlords/houses/{id}/rooms`, `PATCH /api/landlords/houses/{id}/amenities`, `PUT|GET /api/landlords/payment-details`, `GET /api/landlords/bookings` |
 
 ## Deployment on Render
 
-The repository includes a `Dockerfile` that runs the API directly (no Docker Compose needed). Render builds and runs this image, so nginx and the local Postgres container from `docker-compose.yml` are not used.
+### Prerequisites
 
-### 1. Create a Web Service
+You need three external services provisioned before deploying the Render web service:
 
-1. In Render, click **New +** → **Web Service**.
-2. Connect the `unistayapi` GitHub repository.
-3. Select **Docker** as the runtime (Render will use the `Dockerfile`).
-4. Set the service name, region, and instance type.
+1. **Supabase** — Postgres 16 + PostGIS 3.4 (bundled, no manual SQL). Free tier works.
+2. **Upstash Redis** — Free tier. `rediss://default:<token>@<region>.upstash.io:6379`.
+3. **Google Maps Platform** — API key with Routes API and Places API (New) enabled + linked billing account. Optional for testing.
+4. **Cloudinary** — All three credentials for image uploads.
 
-### 2. Create a PostgreSQL database
+### Step-by-step Render deploy
 
-1. In Render, click **New +** → **PostgreSQL**.
-2. Copy the **External Database URL**.
-3. Note: Render Postgres does **not** include PostGIS by default. Either:
-   - Use Render's managed Postgres and run `CREATE EXTENSION postgis;` manually, or
-   - Provision a PostGIS-enabled Postgres elsewhere and point `DATABASE_URL` to it.
+#### 1. Create the Supabase project
 
-### 3. Create a Redis instance
+1. Go to [supabase.com](https://supabase.com) → **New Project** → pick a region, set a DB password. Postgres ≥ 16 is automatically selected.
+2. Once created, go to **Project Settings → Database → Connection string → URI**. Copy the **Session pooler** URL.
+3. Replace `[YOUR-PASSWORD]` with the password you set during project creation.
+4. Reformat the URL for SQLAlchemy async:
+   ```
+   postgresql+asyncpg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
+   ```
+   (Use port `6543` — the transaction-mode pooler supports asyncpg. Port `5432` is for direct connections which also work but bypass the pooler.)
+5. This URL becomes your `DATABASE_URL` env var on Render.
 
-1. Click **New +** → **Redis** (or use an external Redis provider like Upstash).
-2. Copy the connection URL.
+#### 2. Create the Upstash Redis instance
 
-### 4. Configure environment variables
+1. Go to [upstash.com](https://upstash.com) → **Create Database** → pick a region → **Create**.
+2. In **Details → Connect to your database** switch to the **Upstash Redis** tab (not the REST API one).
+3. Copy the whole `rediss://default:<token>@<region>.upstash.io:6379` line.
+4. This becomes your `REDIS_URL` env var on Render.
 
-In the Web Service → **Environment** tab, add at least:
+#### 3. Create the Render Web Service
 
-| Variable | Value / source |
-|---|---|
-| `ENVIRONMENT` | `production` |
-| `DATABASE_URL` | Render Postgres external URL |
-| `JWT_SECRET` | Generate a long random string |
-| `JWT_EXPIRES_IN` | `86400` |
-| `REDIS_URL` | Render Redis URL |
-| `GOOGLE_MAPS_SERVER_KEY` | Your Google Maps Platform server key |
-| `LENCO_MOCK` | `false` (when going live) or `true` (to keep testing) |
-| `LENCO_API_KEY` | From Lenco dashboard |
-| `LENCO_WEBHOOK_SECRET` | From Lenco dashboard |
-| `LENCO_BASE_URL` | `https://api.lenco.co` |
-| `RESEND_API_KEY` | From Resend dashboard |
-| `CLOUDINARY_CLOUD_NAME` | From Cloudinary dashboard |
-| `CLOUDINARY_API_KEY` | From Cloudinary dashboard |
-| `CLOUDINARY_API_SECRET` | From Cloudinary dashboard |
-| `CLOUDINARY_FOLDER` | `unistay` |
+1. Render Dashboard → **New +** → **Web Service**.
+2. Connect the `unistayapi` GitHub repository → branch `dev`.
+3. Set the runtime: **Docker** (Render reads the `Dockerfile` in the repo root).
+4. Choose a service name, region, and instance type (Free is fine for initial testing; Free sleeps after 15 min idle).
+5. **Health Check Path:** `/api/health` (so Render can confirm the service is alive after boot).
 
-The `Dockerfile` entrypoint runs `alembic upgrade head` before starting uvicorn, so migrations are applied automatically on deploy.
+#### 4. Configure environment variables
 
-### 5. Deploy
+In the Web Service → **Environment** tab, add:
 
-1. Click **Create Web Service**.
-2. Render builds the image, runs migrations, and starts the API on the port it assigns via `$PORT`.
-3. Once the deploy is healthy, your API is available at the Render URL (e.g. `https://unistay-api.onrender.com`).
+| Variable                  | Value                                    |
+|---------------------------|------------------------------------------|
+| `ENVIRONMENT`             | `production`                             |
+| `DATABASE_URL`            | Supabase session-pooler URI (from step 1) |
+| `JWT_SECRET`              | Generate a long random string (e.g. `openssl rand -hex 32`) |
+| `JWT_EXPIRES_IN`          | `86400`                                  |
+| `REDIS_URL`               | Upstash `rediss://...` URL (from step 2) |
+| `LENCO_MOCK`              | `false`                                  |
+| `LENCO_API_KEY`           | Lenco sandbox/test key before go-live    |
+| `LENCO_WEBHOOK_SECRET`    | Matching Lenco webhook secret            |
+| `LENCO_BASE_URL`          | `https://api.lenco.co`                   |
+| `GOOGLE_MAPS_SERVER_KEY`  | Your Google Maps Platform server key     |
+| `GOOGLE_MAPS_PLACES_REGION`| `ZM`                                    |
+| `GOOGLE_MAPS_SIGNING_SECRET`| Set for optional server-side Static Maps URL signing |
+| `RESEND_API_KEY`          | From Resend dashboard (required)         |
+| `CLOUDINARY_CLOUD_NAME`   | From Cloudinary dashboard                |
+| `CLOUDINARY_API_KEY`      | From Cloudinary dashboard                |
+| `CLOUDINARY_API_SECRET`   | From Cloudinary dashboard                |
+| `CLOUDINARY_FOLDER`       | `unistay`                                |
 
-## Testing on Render
+#### 5. First deploy
 
-After the deploy is live:
+1. Click **Create Web Service**. Render builds the Docker image (~2-4 min), runs `alembic upgrade head` (which self-enables PostGIS), then starts uvicorn on `$PORT`.
+2. Watch the Render logs for:
+   - `INFO - Alembic upgrade complete` (or similar — migration success)
+   - `INFO - UniStay API starting`
+   - `Uvicorn running on http://0.0.0.0:<PORT>`
+3. Render runs a health check against `/api/health`. If it succeeds your service is live.
+
+#### 6. Smoke test
 
 ```bash
-# 1. Health check
- curl https://your-render-url.onrender.com/api/health
-
-# 2. OpenAPI docs
- open https://your-render-url.onrender.com/docs
-
-# 3. Register a test user
- curl -X POST https://your-render-url.onrender.com/api/auth/register \
-   -H "Content-Type: application/json" \
-   -d '{"full_name":"Test Student","phone":"0977000001","email":"test@example.com","password":"secret123","role":"student"}'
-
-# 4. Log in
- curl -X POST https://your-render-url.onrender.com/api/auth/login \
-   -H "Content-Type: application/json" \
-   -d '{"phone":"0977000001","password":"secret123"}'
-
-# 5. List universities
- curl https://your-render-url.onrender.com/api/universities
-
-# 6. List houses
- curl https://your-render-url.onrender.com/api/houses
+# Quick check from your terminal
+python scripts/render_deploy_check.py https://unistay-api.onrender.com
 ```
 
-### What to verify
+Or manually:
 
-- `/api/health` returns `status: true`.
-- `/docs` loads the OpenAPI UI.
-- Auth endpoints return tokens and user data.
-- House/university endpoints return seeded data (seed universities are inserted automatically when the table is empty; sample houses can be seeded manually with the command in the Local setup section).
-- If `LENCO_MOCK=true`, payment endpoints return mock responses without needing real Lenco credentials.
+```bash
+BASE=https://unistay-api.onrender.com
+
+# 1. Health
+curl -s "$BASE/api/health" | jq .
+
+# 2. Register a student
+curl -s -X POST "$BASE/api/auth/register" \
+  -H "Content-Type: application/json" \
+  -d '{"full_name":"Test","phone":"0977000001","email":"t@example.com","password":"secret123","role":"student"}' | jq .
+
+# 3. Universities
+curl -s "$BASE/api/universities" | jq .
+
+# 4. Houses
+curl -s "$BASE/api/houses" | jq .
+
+# 5. Places (queries Google Maps)
+curl -s "$BASE/api/places/autocomplete?input=Lusaka&session_token=smoke1" | jq .
+```
+
+### Render Free tier note
+
+On the Free tier the container sleeps after ~15 minutes of inactivity. The first request wakes it (30-60s cold start). The mobile app should handle this with a loading state and a 60s timeout.
+
+To keep the service always-on, upgrade to a Render Starter plan ($7/mo).
+
+## CI (GitHub Actions)
+
+The workflow at `.github/workflows/ci.yml` runs on every push and PR to `dev` or `main`:
+
+1. **`test` job** — Installs `.[dev]`, runs `pytest -q` against SQLite + fakeredis. ~30s.
+2. **`integration` job** — (Optional, gated on `SUPABASE_TEST_DB_URL` secret). Runs the PostGIS integration suite against a live Supabase database.
+
+To enable PostGIS CI tests, add a repository secret `SUPABASE_TEST_DB_URL` with a staging/isolated Supabase connection string.
 
 ## AWS EC2 alternative
 
@@ -330,11 +368,14 @@ If you prefer a VM instead of Render:
 2. Clone the repository and copy `.env.example` to `.env`.
 3. Set production values: `ENVIRONMENT=production`, strong `JWT_SECRET`, real `LENCO_API_KEY` and `LENCO_WEBHOOK_SECRET`.
 4. Run `docker compose up --build -d`.
-5. Run migrations: `docker compose exec api alembic upgrade head`.
+5. Migrations run automatically at container start (`alembic upgrade head`).
 6. Configure your DNS to point to the EC2 instance and ensure port 80 is open.
 
 ## Development notes
 
 - The dev token `dev-student-token` is accepted outside production for testing protected endpoints.
-- In mock mode (`LENCO_MOCK=true`), Lenco mobile-money payments are simulated.
-- PostGIS is required for the nearby-house search. The Docker Compose stack includes `postgis/postgis:16-3.4`.
+- Keep `LENCO_MOCK=false` for production verification. Use Lenco sandbox/test credentials before initiating manual payment sweeps.
+- PostGIS is required for the nearby-house search and university-radius queries. The Docker Compose stack includes `postgis/postgis:16-3.4`. On Supabase it's pre-enabled.
+- Google Maps, Cloudinary, and Lenco integration failures are logged server-side with useful upstream detail while the API returns clean envelopes.
+- The current quick health signal is the full test suite: `pytest -q` should finish with 43 passed and 4 skipped unless an integration database is configured.
+- CI on GitHub Actions validates every push.

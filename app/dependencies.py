@@ -38,6 +38,9 @@ def _get_redis_pool() -> aioredis.Redis:
         _redis_pool = aioredis.Redis.from_url(
             settings.redis_url,
             decode_responses=True,
+            socket_connect_timeout=30,
+            socket_timeout=30,
+            health_check_interval=30,
         )
     return _redis_pool
 
@@ -48,6 +51,12 @@ async def close_redis() -> None:
     if _redis_pool is not None:
         await _redis_pool.close()
         _redis_pool = None
+
+
+async def ping_redis() -> bool:
+    """Return whether the configured Redis connection responds to PING."""
+    client = _get_redis_pool()
+    return bool(await client.ping())
 
 
 async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
@@ -108,6 +117,14 @@ async def require_landlord(current_user: User = Depends(get_current_user)) -> Us
     return current_user
 
 
+async def require_student(current_user: User = Depends(get_current_user)) -> User:
+    """Require the authenticated user to be a student."""
+    if current_user.role != "student":
+        raise AuthError("Student access required")
+    return current_user
+
+
 # Convenience alias for endpoints that require an authenticated user.
 CurrentUser = Annotated[User, Depends(get_current_user)]
 LandlordUser = Annotated[User, Depends(require_landlord)]
+StudentUser = Annotated[User, Depends(require_student)]

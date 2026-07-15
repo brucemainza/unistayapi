@@ -42,7 +42,7 @@ class GeoService:
         if university is None:
             raise NotFoundError("University not found")
 
-        houses, total = await self.house_repo.search_near_university(
+        houses_with_dist, total = await self.house_repo.search_near_university(
             university_id=university_id,
             radius_m=radius_m,
             page=page,
@@ -51,8 +51,8 @@ class GeoService:
         )
         return {
             "items": [
-                house_to_dict(h, distance_m=getattr(h, "distance_m", None))
-                for h in houses
+                house_to_dict(house, distance_m=dist_m)
+                for house, dist_m in houses_with_dist
             ],
             "total": total,
             "page": page,
@@ -99,7 +99,12 @@ class GeoService:
         if not rows:
             raise GoogleMapsError("No route returned")
 
-        element = rows[0].get("elements", [{}])[0]
+        first_row = rows[0]
+        element = (
+            first_row.get("elements", [{}])[0]
+            if "elements" in first_row
+            else first_row
+        )
         duration_text = element.get("duration", "0s")
         duration_s = (
             int(duration_text.rstrip("s"))
@@ -138,13 +143,13 @@ class GeoService:
             place_id=place_id, session_token=session_token
         )
 
-    async def build_static_map_url(
+    async def get_static_map_image(
         self,
         house_id: str,
         zoom: int = 15,
         width: int = 400,
         height: int = 250,
-    ) -> str:
+    ) -> tuple[bytes, str]:
         if self.house_repo is None:
             raise NotImplementedError("House repository is required")
 
@@ -157,4 +162,4 @@ class GeoService:
         lat, lon = parse_point(house.coords)
         if lat is None or lon is None:
             raise NotFoundError("House coordinates missing")
-        return self.maps_client.static_map_url(lat, lon, zoom, width, height)
+        return await self.maps_client.fetch_static_map(lat, lon, zoom, width, height)

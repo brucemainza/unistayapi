@@ -1,19 +1,19 @@
 """Universities router."""
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
-from app.repositories.university_repo import UniversityRepository
-from app.schemas.common import envelope
+from app.providers import get_university_service
+from app.schemas.common import Envelope, envelope
+from app.schemas.university import UniversityResponse
 from app.services.university_service import UniversityService
 
 router = APIRouter()
 
 
-@router.get("")
-async def list_universities(db: AsyncSession = Depends(get_db)) -> dict:
+@router.get("", response_model=Envelope[list[UniversityResponse]])
+async def list_universities(
+    service: UniversityService = Depends(get_university_service),
+) -> dict:
     """Return the list of supported universities."""
-    service = UniversityService(UniversityRepository(db))
     universities = await service.list_universities()
     return envelope(True, "Universities retrieved", universities)

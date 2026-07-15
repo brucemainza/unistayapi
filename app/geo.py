@@ -1,6 +1,7 @@
 """Small geospatial helpers shared by seed data and repositories."""
 
 from math import asin, cos, radians, sin, sqrt
+import struct
 from typing import Any
 
 from sqlalchemy import func
@@ -26,6 +27,22 @@ def point_value(db: AsyncSession, latitude: float, longitude: float) -> Any:
 def parse_point(value: Any) -> tuple[float | None, float | None]:
     if value is None:
         return None, None
+
+    data = getattr(value, "data", None)
+    if data is not None:
+        try:
+            raw = bytes(data)
+            if len(raw) >= 21:
+                byte_order = "<" if raw[0] == 1 else ">"
+                geom_type = struct.unpack(f"{byte_order}I", raw[1:5])[0]
+                # EWKB may carry flag bits above the base geometry type.
+                if geom_type & 0xFF == 1:
+                    longitude, latitude = struct.unpack(
+                        f"{byte_order}dd", raw[5:21]
+                    )
+                    return latitude, longitude
+        except Exception:
+            return None, None
 
     text = str(value)
     if not text.startswith("POINT(") or not text.endswith(")"):

@@ -1,60 +1,63 @@
 """Payments router."""
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.clients.lenco_client import LencoClient
-from app.config import settings
-from app.dependencies import get_db
-from app.repositories.booking_repo import BookingRepository
-from app.repositories.notification_repo import NotificationRepository
-from app.repositories.payment_repo import PaymentRepository
-from app.schemas.common import envelope
-from app.schemas.payment import CardPaymentRequest, MobileMoneyPaymentRequest
+from app.dependencies import StudentUser
+from app.providers import get_payment_service
+from app.schemas.common import Envelope, envelope
+from app.schemas.payment import (
+    CardPaymentRequest,
+    MobileMoneyPaymentRequest,
+    PaymentResponse,
+)
 from app.services.payment_service import PaymentService
 
 router = APIRouter()
 webhook_router = APIRouter()
 
 
-def _service(db: AsyncSession) -> PaymentService:
-    return PaymentService(
-        PaymentRepository(db),
-        LencoClient(settings),
-        BookingRepository(db),
-        NotificationRepository(db),
-    )
-
-
-@router.post("/lenco/mobile-money")
+@router.post("/lenco/mobile-money", response_model=Envelope[PaymentResponse])
 async def initiate_mobile_money(
-    body: MobileMoneyPaymentRequest, db: AsyncSession = Depends(get_db)
+    body: MobileMoneyPaymentRequest,
+    current_user: StudentUser,
+    service: PaymentService = Depends(get_payment_service),
 ) -> dict:
-    payment = await _service(db).initiate_mobile_money_payment(body)
+    payment = await service.initiate_mobile_money_payment(
+        body, user_id=current_user.id
+    )
     return envelope(True, "Payment initiated", payment)
 
 
-@router.post("/lenco/card")
+@router.post("/lenco/card", response_model=Envelope[PaymentResponse])
 async def initiate_card(
-    body: CardPaymentRequest, db: AsyncSession = Depends(get_db)
+    body: CardPaymentRequest,
+    current_user: StudentUser,
+    service: PaymentService = Depends(get_payment_service),
 ) -> dict:
-    payment = await _service(db).initiate_card_payment(body)
+    payment = await service.initiate_card_payment(
+        body, user_id=current_user.id
+    )
     return envelope(True, "Card payment initiated", payment)
 
 
-@router.get("/lenco/{reference}")
+@router.get("/lenco/{reference}", response_model=Envelope[PaymentResponse])
 async def get_lenco_payment(
-    reference: str, db: AsyncSession = Depends(get_db)
+    reference: str,
+    current_user: StudentUser,
+    service: PaymentService = Depends(get_payment_service),
 ) -> dict:
-    payment = await _service(db).get_payment_status(reference)
+    payment = await service.get_payment_status(
+        reference, user_id=current_user.id
+    )
     return envelope(True, "Payment retrieved", payment)
 
 
 @webhook_router.post("/lenco")
 async def lenco_webhook(
-    request: Request, db: AsyncSession = Depends(get_db)
+    request: Request,
+    service: PaymentService = Depends(get_payment_service),
 ) -> dict:
+    """Receive a Lenco webhook and reconcile payment status."""
     payload = await request.body()
     signature = request.headers.get("X-Lenco-Signature")
-    await _service(db).process_webhook(payload, signature)
+    await service.process_webhook(payload, signature)
     return envelope(True, "Received", None)

@@ -43,8 +43,10 @@ async def db_sessionmaker() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
 
     previous_env = settings.environment
     previous_mock = settings.lenco_mock
+    previous_otp_bypass = settings.mock_otp_bypass
     settings.environment = "test"
     settings.lenco_mock = True
+    settings.mock_otp_bypass = True
     app.dependency_overrides[get_db] = override_get_db
     try:
         yield sessionmaker
@@ -52,6 +54,7 @@ async def db_sessionmaker() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
         app.dependency_overrides.clear()
         settings.environment = previous_env
         settings.lenco_mock = previous_mock
+        settings.mock_otp_bypass = previous_otp_bypass
         await engine.dispose()
 
 
