@@ -1,5 +1,7 @@
 # Geo Module Implementation Plan
 
+> Historical planning artifact. The verified current contract is maintained in `README.md` and `API_REFERENCE.md`; consult those documents for deployed configuration and health-readiness behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add PostGIS-powered house search by university, Google Maps autocomplete/details proxy, Routes API ETA with caching, static map URLs, and background reverse geocoding to the UniStay backend.

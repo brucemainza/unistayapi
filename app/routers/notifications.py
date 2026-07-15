@@ -1,41 +1,39 @@
 """Notifications router."""
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import CurrentUser, get_db
-from app.repositories.notification_repo import NotificationRepository
-from app.schemas.common import envelope
+from app.dependencies import CurrentUser
+from app.providers import get_notification_service
+from app.schemas.common import Envelope, envelope
+from app.schemas.notification import NotificationResponse
 from app.services.notification_service import NotificationService
 
 router = APIRouter()
 
 
-def _service(db: AsyncSession) -> NotificationService:
-    return NotificationService(NotificationRepository(db))
-
-
-@router.get("")
+@router.get("", response_model=Envelope[list[NotificationResponse]])
 async def list_notifications(
-    current_user: CurrentUser, db: AsyncSession = Depends(get_db)
+    current_user: CurrentUser,
+    service: NotificationService = Depends(get_notification_service),
 ) -> dict:
-    notifications = await _service(db).list_notifications(current_user.id)
+    notifications = await service.list_notifications(current_user.id)
     return envelope(True, "Notifications retrieved", notifications)
 
 
 @router.patch("/read-all")
 async def read_all(
-    current_user: CurrentUser, db: AsyncSession = Depends(get_db)
+    current_user: CurrentUser,
+    service: NotificationService = Depends(get_notification_service),
 ) -> dict:
-    result = await _service(db).mark_all_read(current_user.id)
+    result = await service.mark_all_read(current_user.id)
     return envelope(True, "Notifications marked read", result)
 
 
-@router.patch("/{notification_id}/read")
+@router.patch("/{notification_id}/read", response_model=Envelope[NotificationResponse])
 async def read_notification(
     notification_id: str,
     current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    service: NotificationService = Depends(get_notification_service),
 ) -> dict:
-    notification = await _service(db).mark_read(current_user.id, notification_id)
+    notification = await service.mark_read(current_user.id, notification_id)
     return envelope(True, "Notification marked read", notification)

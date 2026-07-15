@@ -1,7 +1,7 @@
 """House repository for persistence and search operations."""
 
 from geoalchemy2 import Geography, Geometry
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.orm import selectinload
 
 from app.geo import point_wkt
@@ -9,6 +9,19 @@ from app.models.house import House
 from app.models.house_amenity import HouseAmenity
 from app.models.university import University
 from app.repositories.base import BaseRepository
+
+
+# Canonical eager-loading options used by all House queries that need full
+# relationship hydration. Keep in sync with the relationships defined on the
+# House model.
+HOUSE_EAGER_LOAD = (
+    selectinload(House.landlord),
+    selectinload(House.university),
+    selectinload(House.amenities),
+    selectinload(House.images),
+    selectinload(House.nearby_universities),
+    selectinload(House.rooms),
+)
 
 
 class HouseRepository(BaseRepository):
@@ -28,14 +41,8 @@ class HouseRepository(BaseRepository):
         """Return filtered, paginated houses plus total count."""
         stmt = (
             select(House)
-            .options(
-                selectinload(House.landlord),
-                selectinload(House.university),
-                selectinload(House.amenities),
-                selectinload(House.images),
-                selectinload(House.nearby_universities),
-                selectinload(House.rooms),
-            )
+            .where(House.is_deleted == false())
+            .options(*HOUSE_EAGER_LOAD)
             .order_by(House.created_at.desc())
         )
 
@@ -76,15 +83,8 @@ class HouseRepository(BaseRepository):
         """Return a single house with all related data loaded."""
         result = await self.db.execute(
             select(House)
-            .where(House.id == house_id)
-            .options(
-                selectinload(House.landlord),
-                selectinload(House.university),
-                selectinload(House.amenities),
-                selectinload(House.images),
-                selectinload(House.nearby_universities),
-                selectinload(House.rooms),
-            )
+            .where(House.id == house_id, House.is_deleted == false())
+            .options(*HOUSE_EAGER_LOAD)
         )
         return result.scalar_one_or_none()
 
@@ -92,15 +92,8 @@ class HouseRepository(BaseRepository):
         """Return all houses owned by a landlord."""
         result = await self.db.execute(
             select(House)
-            .where(House.landlord_id == landlord_id)
-            .options(
-                selectinload(House.landlord),
-                selectinload(House.university),
-                selectinload(House.amenities),
-                selectinload(House.images),
-                selectinload(House.nearby_universities),
-                selectinload(House.rooms),
-            )
+            .where(House.landlord_id == landlord_id, House.is_deleted == false())
+            .options(*HOUSE_EAGER_LOAD)
             .order_by(House.created_at.desc())
         )
         return list(result.scalars().all())
@@ -148,23 +141,17 @@ class HouseRepository(BaseRepository):
             filtered.sort(key=lambda item: item[0])
             total = len(filtered)
             paginated = filtered[(page - 1) * limit : page * limit]
-            for dist_m, house in paginated:
-                house.distance_m = int(round(dist_m / 10) * 10)
-            return [house for _, house in paginated], total
+            return [(house, int(round(dist_m / 10) * 10)) for dist_m, house in paginated], total
 
         campus_point = func.ST_GeogFromText(f"POINT({campus_lon} {campus_lat})")
         distance_col = func.ST_Distance(House.coords, campus_point).label("distance_m")
         stmt = (
             select(House, distance_col)
-            .where(func.ST_DWithin(House.coords, campus_point, radius_m))
-            .options(
-                selectinload(House.landlord),
-                selectinload(House.university),
-                selectinload(House.amenities),
-                selectinload(House.images),
-                selectinload(House.nearby_universities),
-                selectinload(House.rooms),
+            .where(
+                func.ST_DWithin(House.coords, campus_point, radius_m),
+                House.is_deleted == false(),
             )
+            .options(*HOUSE_EAGER_LOAD)
             .order_by(distance_col)
         )
 
@@ -191,10 +178,9 @@ class HouseRepository(BaseRepository):
 
         stmt = stmt.offset((page - 1) * limit).limit(limit)
         result = await self.db.execute(stmt)
-        houses: list[House] = []
+        houses: list[tuple[House, int]] = []
         for house, dist in result.all():
-            house.distance_m = int(round(dist / 10) * 10)
-            houses.append(house)
+            houses.append((house, int(round(dist / 10) * 10)))
         return houses, total
 
     async def nearby(
@@ -205,14 +191,9 @@ class HouseRepository(BaseRepository):
 
         if get_dialect_name(self.db) != "postgresql":
             result = await self.db.execute(
-                select(House).options(
-                    selectinload(House.landlord),
-                    selectinload(House.university),
-                    selectinload(House.amenities),
-                    selectinload(House.images),
-                    selectinload(House.nearby_universities),
-                    selectinload(House.rooms),
-                )
+                select(House)
+                .where(House.is_deleted == false())
+                .options(*HOUSE_EAGER_LOAD)
             )
             houses = list(result.scalars().all())
             nearby_houses: list[tuple[float, House]] = []
@@ -230,16 +211,10 @@ class HouseRepository(BaseRepository):
         result = await self.db.execute(
             select(House)
             .where(
-                func.ST_DWithin(House.coords, point, radius_km * 1000)
+                func.ST_DWithin(House.coords, point, radius_km * 1000),
+                House.is_deleted == false(),
             )
-            .options(
-                selectinload(House.landlord),
-                selectinload(House.university),
-                selectinload(House.amenities),
-                selectinload(House.images),
-                selectinload(House.nearby_universities),
-                selectinload(House.rooms),
-            )
+            .options(*HOUSE_EAGER_LOAD)
             .order_by(func.ST_Distance(House.coords, point))
             .limit(20)
         )

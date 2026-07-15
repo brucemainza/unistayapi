@@ -7,6 +7,19 @@ import cloudinary.uploader
 
 from app.config import settings
 from app.exceptions import AppError
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+_SENSITIVE_KEYS = {
+    "api_key",
+    "api_secret",
+    "authorization",
+    "key",
+    "secret",
+    "signature",
+    "token",
+}
 
 
 class CloudinaryError(AppError):
@@ -32,6 +45,41 @@ def _configure() -> None:
 _configure()
 
 
+def _redact_sensitive(value):
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if any(sensitive in key_text for sensitive in _SENSITIVE_KEYS):
+                redacted[key] = "<REDACTED>"
+            else:
+                redacted[key] = _redact_sensitive(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
+def _extract_cloudinary_error(exc: Exception) -> dict:
+    """Best-effort extraction of Cloudinary's error payload."""
+    payload: dict = {"message": str(exc)}
+    if hasattr(exc, "message"):
+        payload["message"] = str(exc.message)
+    if hasattr(exc, "http_code"):
+        payload["http_code"] = exc.http_code
+    if hasattr(exc, "code"):
+        payload["code"] = exc.code
+    if hasattr(exc, "status"):
+        payload["status"] = exc.status
+    if hasattr(exc, "response"):
+        response = exc.response
+        payload["response"] = response if isinstance(response, (dict, list, str, int, float, bool, type(None))) else str(response)
+    if hasattr(exc, "error"):
+        error = exc.error
+        payload["error"] = error if isinstance(error, (dict, list, str, int, float, bool, type(None))) else str(error)
+    return _redact_sensitive(payload)
+
+
 async def upload_image(
     file_bytes: bytes, filename: str, folder: str | None = None
 ) -> str:
@@ -51,7 +99,17 @@ async def upload_image(
             resource_type="image",
         )
     except Exception as exc:
-        raise CloudinaryError(f"Cloudinary upload failed: {exc}") from exc
+        error_payload = _extract_cloudinary_error(exc)
+        logger.error(
+            "Cloudinary upload failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "cloud_name": settings.cloudinary_cloud_name,
+                "folder": folder or settings.cloudinary_folder,
+                "error": error_payload,
+            },
+        )
+        raise CloudinaryError() from exc
 
     url = result.get("secure_url") or result.get("url")
     if not url:

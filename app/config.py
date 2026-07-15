@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     google_maps_places_region: str = "ZM"
     redis_url: str | None = None
     resend_api_key: str | None = None
+    resend_from_email: str = "UniStay <no-reply@mainzabruce.online>"
     otp_ttl_seconds: int = 600
     otp_resend_cooldown: int = 60
     otp_max_attempts: int = 5
@@ -32,6 +33,27 @@ class Settings(BaseSettings):
     cloudinary_api_secret: str | None = None
     cloudinary_folder: str = "unistay"
     cloudinary_secure: bool = True
+    mock_otp_bypass: bool = False
+
+    _placeholder_values = {
+        "",
+        "change-me",
+        "change-me-to-a-long-random-value",
+        "your-api-key",
+        "your-secret",
+        "placeholder",
+        "mock",
+        "test",
+    }
+
+    def _is_missing_or_placeholder(self, value: str | None) -> bool:
+        if value is None:
+            return True
+        normalized = value.strip()
+        if not normalized:
+            return True
+        lowered = normalized.lower()
+        return lowered in self._placeholder_values or "your-" in lowered
 
     def validate_for_environment(self, logger: Logger | None = None) -> None:
         """Validate required settings for the active environment.
@@ -44,16 +66,38 @@ class Settings(BaseSettings):
         if self.environment != "production":
             return
 
-        missing: list[str] = []
-        if not self.google_maps_server_key:
-            missing.append("GOOGLE_MAPS_SERVER_KEY")
-        if not self.redis_url:
-            missing.append("REDIS_URL")
+        missing_or_placeholder: list[str] = []
+        required_values = {
+            "DATABASE_URL": self.database_url,
+            "JWT_SECRET": self.jwt_secret,
+            "LENCO_API_KEY": self.lenco_api_key,
+            "LENCO_WEBHOOK_SECRET": self.lenco_webhook_secret,
+            "GOOGLE_MAPS_SERVER_KEY": self.google_maps_server_key,
+            "REDIS_URL": self.redis_url,
+            "RESEND_API_KEY": self.resend_api_key,
+            "CLOUDINARY_CLOUD_NAME": self.cloudinary_cloud_name,
+            "CLOUDINARY_API_KEY": self.cloudinary_api_key,
+            "CLOUDINARY_API_SECRET": self.cloudinary_api_secret,
+        }
+        for name, value in required_values.items():
+            if self._is_missing_or_placeholder(value):
+                missing_or_placeholder.append(name)
 
-        if missing:
+        if len(self.jwt_secret) < 32:
+            missing_or_placeholder.append("JWT_SECRET")
+        if self.lenco_mock:
+            missing_or_placeholder.append("LENCO_MOCK=false")
+
+        # Production must never accept the phone-OTP mock bypass; force-disable
+        # it regardless of what the env var says so a deploy cannot accidentally
+        # accept any 5-digit code by mistake.
+        if getattr(self, "mock_otp_bypass", True):
+            self.mock_otp_bypass = False
+
+        if missing_or_placeholder:
             reason = (
-                "Missing required production settings: "
-                + ", ".join(missing)
+                "Missing, placeholder, or unsafe production settings: "
+                + ", ".join(sorted(set(missing_or_placeholder)))
             )
             if logger is not None:
                 logger.error(reason)

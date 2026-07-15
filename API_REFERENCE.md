@@ -1,6 +1,6 @@
 # UniStay API Reference
 
-Generated from the running OpenAPI schema (`/openapi.json`) combined with real captured responses. This document is the single source of truth for Flutter mobile integration.
+Generated from the running OpenAPI schema (`/openapi.json`) combined with captured responses. This document is the single source of truth for Flutter mobile integration. Production requests require real integrations; `LENCO_MOCK=false` is mandatory outside isolated tests.
 
 ---
 
@@ -28,7 +28,7 @@ Every endpoint — success or error — wraps its payload in:
 }
 ```
 
-The **only** exception is `GET /openapi.json` (FastAPI schema, unenveloped).
+The exceptions are `GET /openapi.json` (FastAPI schema, unenveloped) and `GET /api/houses/{id}/static-map` (raw image bytes).
 
 ### Authentication
 
@@ -43,9 +43,9 @@ The **only** exception is `GET /openapi.json` (FastAPI schema, unenveloped).
 
 | Endpoint              | OTP Type  | OTP Length | Storage      | Use Case           |
 |-----------------------|-----------|------------|--------------|--------------------|
-| `/auth/register`      | Phone     | 5 digits   | DB (`otps` table) | Quick phone-signup |
-| `/auth/verify-otp`    | Phone     | 5 digits   | —            | Phone verification |
-| `/auth/resend-otp`    | Phone     | 5 digits   | —            | New phone code    |
+| `/auth/register`      | Account email | 5 digits | DB (`otps` table, HMAC-hashed) | Registration + verified email delivery |
+| `/auth/verify-otp`    | Account email | 5 digits | — | Account verification (five-attempt cap) |
+| `/auth/resend-otp`    | Account email | 5 digits | — | New code through Resend |
 | `/auth/signup`        | Email     | 6 digits   | Redis (hashed) | Email-signup + anti-bot rate limit (5/IP/60s) |
 | `/auth/verify-email`  | Email     | 6 digits   | —            | Email verification (5 attempts, then must request new code) |
 | `/auth/resend-email-otp` | Email | 6 digits   | —            | New email code (60s cooldown) |
@@ -116,9 +116,11 @@ Example response keys you will receive:
 | ✅       | `POST /api/bookings`                        | Bearer                 |
 | ✅       | `GET /api/bookings`                         | Bearer                 |
 | ✅       | `GET /api/bookings/{id}/receipt`            | Bearer                 |
+| ✅       | `GET /api/bookings/{id}/receipt.pdf`        | Bearer                 |
+| ✅       | `POST /api/bookings/{id}/receipt/email`     | Bearer *(Resend)*      |
 | ✅       | `PATCH /api/bookings/{id}/status`           | Bearer *(landlord)*     |
-| ✅       | `POST /api/payments/lenco/mobile-money`     | Bearer *(Lenco mock)*  |
-| ✅       | `POST /api/payments/lenco/card`             | Bearer *(Lenco mock)*  |
+| ✅       | `POST /api/payments/lenco/mobile-money`     | Bearer *(Lenco)*       |
+| ✅       | `POST /api/payments/lenco/card`             | Bearer *(Lenco)*       |
 | ✅       | `GET /api/payments/lenco/{reference}`       | Bearer                 |
 | ✅       | `POST /api/webhooks/lenco`                  | None *(signature)*     |
 | ✅       | `GET /api/notifications`                    | Bearer                 |
@@ -170,7 +172,7 @@ Example response keys you will receive:
 
 #### `POST /api/auth/register`
 
-Register a new account. Returns a JWT token immediately (phone-OTP is optional).
+Register a new account, return a JWT, and send a 5-digit verification code to the registered email through Resend. Returns 502 if Resend does not accept delivery.
 
 - **Auth:** none.
 - **Request:** (full_name, phone, email, password, role = `"student"` or `"landlord"`)
@@ -467,20 +469,10 @@ Every item in a geospatial response includes a `distanceM` field (meters from th
 
 #### `GET /api/houses/{id}/static-map`
 
-Returns a signed Google Static Maps URL showing the house location. Requires `GOOGLE_MAPS_SERVER_KEY`.
+Returns a proxied Google Static Maps image showing the house location. The server key remains on the backend and is never returned to the client. Requires `GOOGLE_MAPS_SERVER_KEY`.
 
 - **Auth:** none.
-- **200:**
-
-```json
-{
-  "status": true,
-  "message": "Static map URL generated",
-  "data": {
-    "url": "https://maps.googleapis.com/maps/api/staticmap?center=-15.393%2C28.336&zoom=15&size=400x250&markers=..."
-  }
-}
-```
+- **200:** raw `image/png` or the image MIME type returned by Google. This endpoint intentionally does not use the JSON envelope.
 
 #### `GET /api/houses/{id}/eta`
 
@@ -648,7 +640,20 @@ Single file upload.
 #### `GET /api/bookings/{id}/receipt`
 
 - **Auth:** Bearer.
-- **200** — booking-shaped receipt (includes payment status).
+- **200** — booking-shaped receipt (includes student, room, house, and payment status).
+
+#### `GET /api/bookings/{id}/receipt.pdf`
+
+- **Auth:** Bearer.
+- **200** — printable `application/pdf` receipt.
+
+#### `POST /api/bookings/{id}/receipt/email`
+
+- **Auth:** Bearer.
+- **200** — sends the printable PDF receipt to the student's registered email address through Resend.
+- **422** — no successful payment exists for the booking yet. Receipt emails are only allowed after Lenco reports a successful payment.
+
+This endpoint is available only after a successful payment. Successful Lenco webhook/status reconciliation also sends the receipt automatically once per payment. The PDF is generated from booking + successful payment details and sent directly through Resend; Redis is not used for receipt delivery.
 
 #### `PATCH /api/bookings/{id}/status`
 
@@ -667,7 +672,7 @@ Update booking status. **Caller must be the landlord who owns the booked house.*
 
 ### 3.10 Payments (Lenco)
 
-When `LENCO_MOCK=true` all payment endpoints return simulated responses without calling Lenco. When `LENCO_MOCK=false` the real Lenco API is called and requires `LENCO_API_KEY`.
+With `LENCO_MOCK=false`, payment endpoints call the real Lenco API and require `LENCO_API_KEY`. Use sandbox/test Lenco credentials for manual sweeps before using production keys.
 
 #### `POST /api/payments/lenco/mobile-money`
 
@@ -687,7 +692,7 @@ Initiate a mobile-money payment (e.g., MTN, Airtel).
 }
 ```
 
-- **200 (mock):**
+- **200 (example; Lenco fields vary by payment method):**
 
 ```json
 {
@@ -699,14 +704,14 @@ Initiate a mobile-money payment (e.g., MTN, Airtel).
     "amount": "150.00",
     "currency": "ZMW",
     "paymentType": "mobile-money",
-    "lencoReference": "MOCK-5c400caab4c7"
+    "lencoReference": "lenco-collection-reference"
   }
 }
 ```
 
 #### `POST /api/payments/lenco/card`
 
-Initiate a card payment (returns 3DS redirect in mock mode).
+Initiate a card payment. The endpoint requires a student bearer token and must use Lenco sandbox/test credentials before production card collection is enabled.
 
 - **Auth:** Bearer.
 - **Request:**
@@ -734,7 +739,7 @@ Initiate a card payment (returns 3DS redirect in mock mode).
 }
 ```
 
-- **200 (mock):**
+- **200 (example; Lenco fields vary by payment method):**
 
 ```json
 {
@@ -746,11 +751,11 @@ Initiate a card payment (returns 3DS redirect in mock mode).
     "amount": "150.00",
     "currency": "ZMW",
     "paymentType": "card",
-    "lencoReference": "MOCK-CARD-...",
+    "lencoReference": "lenco-card-reference",
     "meta": {
       "authorization": {
         "mode": "redirect",
-        "redirect": "https://mock.lenco.co/3ds"
+        "redirect": "https://checkout.lenco.example/3ds"
       }
     }
   }
@@ -768,7 +773,7 @@ Poll the status of a payment initiated via `POST`.
 
 #### `POST /api/webhooks/lenco`
 
-Receives Lenco event callbacks. In production the `X-Lenco-Signature` header is validated against `LENCO_WEBHOOK_SECRET`. In mock mode the signature check is skipped.
+Receives Lenco event callbacks. In production, `X-Lenco-Signature` is mandatory and validated against `LENCO_WEBHOOK_SECRET`; duplicate event IDs are ignored.
 
 - **Auth:** none (external).
 - **Request (simulated):**
@@ -956,7 +961,7 @@ This section is a one-page checklist for the Flutter developer integrating the A
 
 ### 4.1 Auth Flow — the two paths
 
-**Path A: Phone OTP** (quick, mock-mode in dev)
+**Path A: account email OTP** (5 digits, delivered by Resend)
 1. `POST /api/auth/register` → receives token + unverified user. Token works immediately.
 2. (Optional) `POST /api/auth/verify-otp` → marks user verified.
 3. Store the JWT. No expiry endpoint — trade-off is 24h or re-login.
@@ -1053,7 +1058,7 @@ These endpoints depend on environment variables and may return errors if the ser
 | `GET /api/houses/{id}/static-map`   | Google Maps Static Maps API |
 | `GET /api/places/*`                 | Google Maps Places API (New) |
 | `POST /api/images/*`                | Cloudinary       |
-| `POST /api/payments/lenco/*`        | Lenco (mock safe-default) |
+| `POST /api/payments/lenco/*`        | Lenco collections API |
 
 ### 4.8 Render Cold Start (Free tier)
 
@@ -1088,8 +1093,8 @@ Deploying on Render requires:
 | **Redis**          | Use **Upstash** free tier. Set `REDIS_URL` = `rediss://...:6379`. |
 | **Google Maps**    | `GOOGLE_MAPS_SERVER_KEY` with Routes API and Places API (New) enabled + linked billing account. |
 | **Cloudinary**     | All three `CLOUDINARY_*` env vars. |
-| **Lenco**          | Leave `LENCO_MOCK=true` for safe defaults. Set `LENCO_API_KEY` and `LENCO_WEBHOOK_SECRET` when going live. |
-| **Resend (email)** | `RESEND_API_KEY` — optional; email silently skipped if missing. |
+| **Lenco**          | Set `LENCO_MOCK=false`, `LENCO_API_KEY`, and `LENCO_WEBHOOK_SECRET`; prefer sandbox/test keys for verification. |
+| **Resend (email)** | `RESEND_API_KEY` and `RESEND_FROM_EMAIL`; production startup fails if missing. |
 
 The Docker image runs `alembic upgrade head` at startup, which self-enables PostGIS via `CREATE EXTENSION IF NOT EXISTS postgis` in the initial migration.
 

@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.config import settings
+from app.exceptions import RateLimitError
 from app.services.email import send_otp_email
 from app.services.otp import issue_otp, verify_otp
-from app.exceptions import RateLimitError
 
 
 @pytest.fixture
@@ -60,32 +61,44 @@ async def test_verify_otp_attempts_limit(fake_redis, email):
         await verify_otp(fake_redis, email, "000000")
 
 
-async def test_send_otp_email_swallows_resend_errors(email):
+async def test_send_otp_email_reports_resend_errors(email, monkeypatch):
+    monkeypatch.setattr(settings, "resend_api_key", "test-key")
     with patch("app.services.email.resend.Emails.send") as mock_send:
         mock_send.side_effect = RuntimeError("boom")
-        await send_otp_email(email, "123456")
+        assert await send_otp_email(email, "123456") is False
 
 
-async def test_send_otp_email_calls_resend_with_expected_args(email):
+async def test_send_otp_email_calls_resend_with_expected_args(email, monkeypatch):
+    monkeypatch.setattr(settings, "resend_api_key", "test-key")
     with patch("app.services.email.resend.Emails.send") as mock_send:
-        await send_otp_email(email, "123456")
+        assert await send_otp_email(email, "123456") is True
         mock_send.assert_called_once()
         params = mock_send.call_args.args[0]
-        assert params["from"] == "UniStay <onboarding@resend.dev>"
+        assert params["from"] == settings.resend_from_email
         assert params["to"] == email
         assert "123456" in params["html"]
 
 
-async def test_signup_returns_201_and_schedules_email(client, unique_user_payload):
+async def test_signup_returns_201_after_resend_accepts_email(client, unique_user_payload):
     payload = unique_user_payload("student")
 
     with patch("app.routers.auth.send_otp_email", new_callable=AsyncMock) as mock_email:
+        mock_email.return_value = True
         response = await client.post("/api/auth/signup", json=payload)
         assert response.status_code == 201, response.text
         data = response.json()["data"]
         assert data["email"] == payload["email"]
         assert "id" in data
         mock_email.assert_called_once()
+
+
+async def test_signup_returns_502_when_resend_rejects_delivery(client, unique_user_payload):
+    with patch("app.routers.auth.send_otp_email", new_callable=AsyncMock) as mock_email:
+        mock_email.return_value = False
+        response = await client.post("/api/auth/signup", json=unique_user_payload("student"))
+
+    assert response.status_code == 502
+    assert response.json()["status"] is False
 
 
 async def test_signup_rate_limit_blocks_after_five_attempts(client, unique_user_payload):

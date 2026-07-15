@@ -1,5 +1,7 @@
 # Geo Module Design
 
+> Historical design artifact. The verified deployed configuration and readiness behavior are maintained in `README.md` and `API_REFERENCE.md`.
+
 ## Goal
 Add production-grade geolocation capabilities to the UniStay backend: PostGIS-powered house search by campus/university, Google Maps autocomplete/details proxy, Routes API ETA with caching, and static map thumbnail URLs.
 

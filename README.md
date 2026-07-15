@@ -2,7 +2,7 @@
 
 FastAPI backend for UniStay, a boarding-house discovery and landlord-management app.
 
-Current status: the full automated test suite is green, with 36 tests passing and 1 skipped. A GitHub Actions CI workflow runs the suite on every push to `dev` and `main`.
+Current status: the automated suite is green with 43 passing and 4 optional PostGIS tests skipped when no isolated integration database is configured. A GitHub Actions CI workflow runs the suite on every push to `dev` and `main`.
 
 ## Tech stack
 
@@ -12,7 +12,7 @@ Current status: the full automated test suite is green, with 36 tests passing an
 - **Migrations:** Alembic (auto-ran at container start)
 - **Validation:** Pydantic v2
 - **Settings:** pydantic-settings
-- **Auth:** bcrypt + python-jose (JWT)
+- **Auth:** bcrypt + HS256 JWT signing
 - **HTTP client:** httpx
 - **Container:** Docker + Docker Compose (local); Docker-only on Render
 - **Reverse proxy:** nginx (local only; Render handles routing natively)
@@ -21,7 +21,7 @@ Current status: the full automated test suite is green, with 36 tests passing an
 
 ## Current system highlights
 
-- Startup health checks probe Google Routes API and Google Places API with a 5-second timeout. On failure the app degrades gracefully (flags set to `false`) and boots normally — a flaky Google Maps account never blocks the deploy.
+- Startup health checks probe Google Routes API and Google Places API with a 25-second timeout. `/api/health` returns HTTP 503 until PostgreSQL, Redis, Routes, and Places are all healthy.
 - Cloudinary image uploads are working against the configured account and support both single and multiple file uploads.
 - Landlord house deletion is implemented as a soft delete and hidden from public search/list/detail flows.
 - External API failures are logged server-side with upstream details while the client receives a clean application error.
@@ -76,15 +76,16 @@ cp .env.example .env
 | `POSTGRES_PASSWORD` | PostgreSQL password | `unistay` |
 | `JWT_SECRET` | Secret key for JWT signing | **required** |
 | `JWT_EXPIRES_IN` | JWT expiry in seconds | `86400` |
-| `LENCO_MOCK` | Run Lenco payments in mock mode | `true` |
-| `LENCO_API_KEY` | Lenco API key (production) | optional |
+| `LENCO_MOCK` | Must be `false` outside isolated tests | `false` |
+| `LENCO_API_KEY` | Lenco sandbox or production API key | required in production |
 | `LENCO_BASE_URL` | Lenco API base URL | `https://api.lenco.co` |
-| `LENCO_WEBHOOK_SECRET` | Lenco webhook secret (production) | optional |
+| `LENCO_WEBHOOK_SECRET` | Lenco webhook signing secret | required in production |
 | `GOOGLE_MAPS_SERVER_KEY` | Google Maps Platform server API key | required in production |
-| `GOOGLE_MAPS_SIGNING_SECRET` | Google Static Maps URL signing secret | optional |
+| `GOOGLE_MAPS_SIGNING_SECRET` | Optional server-side Google Static Maps URL signing secret | optional |
 | `GOOGLE_MAPS_PLACES_REGION` | Places API region bias (ISO-3166-1 alpha-2) | `ZM` |
 | `REDIS_URL` | Redis connection URL | required in production |
-| `RESEND_API_KEY` | Resend transactional email API key | optional |
+| `RESEND_API_KEY` | Resend transactional email API key | required in production |
+| `RESEND_FROM_EMAIL` | Verified Resend sender address | `UniStay <no-reply@mainzabruce.online>` |
 | `OTP_TTL_SECONDS` | Email OTP validity window | `600` |
 | `OTP_RESEND_COOLDOWN` | Minimum seconds between OTP resends | `60` |
 | `OTP_MAX_ATTEMPTS` | Maximum OTP verification attempts per code | `5` |
@@ -107,26 +108,26 @@ UniStay API is a FastAPI backend built around three layers:
 
 ### Validation and startup behavior
 
-- The app probes Google Maps at startup with a 5-second timeout. If Google Maps is unreachable the app still boots and `/api/health` reports `google_maps: {routes: false, places: false}`.
-- `/api/health` returns that snapshot so deploys confirm access immediately.
+- The app probes Google Maps at startup with a 25-second timeout. A failed probe is visible in `/api/health` and makes that endpoint return HTTP 503, preventing a load balancer from treating a degraded deployment as ready.
+- `/api/health` verifies PostgreSQL and Redis on each request in addition to reporting the Maps startup snapshot.
 - Cloudinary uploads require all three credentials and use the configured folder from `CLOUDINARY_FOLDER`.
 
 ### Authentication
 
 - Register/login returns a JWT.
 - In non-production environments, the token `dev-student-token` is accepted as a convenience for testing.
-- **Phone-OTP path:** `register` → (optional) 5-digit `/verify-otp` (mocked in non-prod, table-backed in prod).
-- **Email-OTP path:** `signup` → 6-digit email OTP stored in Redis (hashed, 5-retry max, 60s cooldown, 10-min TTL) → `/verify-email`.
+- **Account OTP path:** `register` sends a 5-digit code to the registered email through Resend. Codes are HMAC-hashed in PostgreSQL, expire after 10 minutes, and lock after five failed attempts.
+- **Email-OTP path:** `signup` sends a 6-digit email OTP through Resend. Redis stores only a hash, enforces a five-attempt cap and a 60-second cooldown, and the endpoint returns 502 when Resend does not accept delivery.
 
 ### External integrations
 
 | Feature | Local/test | Production on Render |
 |---|---|---|
-| Payments (Lenco) | `LENCO_MOCK=true` simulates responses | Requires `LENCO_API_KEY` and `LENCO_WEBHOOK_SECRET` |
+| Payments (Lenco) | Use explicit test/sandbox credentials for manual sweeps | Requires `LENCO_MOCK=false`, `LENCO_API_KEY`, and `LENCO_WEBHOOK_SECRET` |
 | Google Maps | Optional; endpoints error if not configured | Required: `GOOGLE_MAPS_SERVER_KEY`; optional signing secret |
 | Redis | Optional for rate limiting/OTP in dev | Required: `REDIS_URL` (Upstash) |
 | Image uploads | Optional | Required: Cloudinary credentials |
-| Email OTP | Optional; skipped if no Resend key | Required: `RESEND_API_KEY` |
+| Email OTP | Mocked only in isolated tests | Required: `RESEND_API_KEY` and a verified sender; delivery failures return 502 |
 
 ### Database
 
@@ -191,7 +192,7 @@ pip install -e ".[dev]"
 ENVIRONMENT=test pytest
 ```
 
-The test suite uses an in-memory SQLite database and `fakeredis`. **36 tests pass, 1 skipped.**
+The test suite uses an in-memory SQLite database and `fakeredis`. The verified local result is **43 passed, 4 skipped**; skipped tests require `UNISTAY_INTEGRATION_DB_URL`.
 
 ### PostGIS integration tests (optional)
 
@@ -236,8 +237,8 @@ See **[API_REFERENCE.md](API_REFERENCE.md)** — this is the mobile-facing refer
 | Images | `POST /api/images/upload`, `POST /api/images/upload-multiple` |
 | Places | `GET /api/places/autocomplete`, `GET /api/places/details` |
 | Favorites | `GET /api/favorites`, `POST /api/favorites`, `DELETE /api/favorites/{house_id}` |
-| Bookings | `POST /api/bookings`, `GET /api/bookings`, `GET /api/bookings/{id}/receipt`, `PATCH /api/bookings/{id}/status` |
-| Payments | `POST /api/payments/lenco/mobile-money`, `POST /api/payments/lenco/card`, `GET /api/payments/lenco/{reference}`, `POST /api/webhooks/lenco` |
+| Bookings | `POST /api/bookings`, `GET /api/bookings`, `GET /api/bookings/{id}/receipt`, `GET /api/bookings/{id}/receipt.pdf`, `POST /api/bookings/{id}/receipt/email`, `PATCH /api/bookings/{id}/status` |
+| Payments | Student-authenticated `POST /api/payments/lenco/mobile-money`, `POST /api/payments/lenco/card`, `GET /api/payments/lenco/{reference}`, `POST /api/webhooks/lenco` |
 | Notifications | `GET /api/notifications`, `PATCH /api/notifications/{id}/read`, `PATCH /api/notifications/read-all` |
 | Landlords | `GET /api/landlords/me/houses`, `POST|PATCH|DELETE /api/landlords/houses`, `POST|PATCH|DELETE /api/landlords/houses/{id}/rooms`, `PATCH /api/landlords/houses/{id}/amenities`, `PUT|GET /api/landlords/payment-details`, `GET /api/landlords/bookings` |
 
@@ -292,14 +293,14 @@ In the Web Service → **Environment** tab, add:
 | `JWT_SECRET`              | Generate a long random string (e.g. `openssl rand -hex 32`) |
 | `JWT_EXPIRES_IN`          | `86400`                                  |
 | `REDIS_URL`               | Upstash `rediss://...` URL (from step 2) |
-| `LENCO_MOCK`              | `true` (safe default)                    |
-| `LENCO_API_KEY`           | (leave blank until going live)           |
-| `LENCO_WEBHOOK_SECRET`    | (leave blank until going live)           |
+| `LENCO_MOCK`              | `false`                                  |
+| `LENCO_API_KEY`           | Lenco sandbox/test key before go-live    |
+| `LENCO_WEBHOOK_SECRET`    | Matching Lenco webhook secret            |
 | `LENCO_BASE_URL`          | `https://api.lenco.co`                   |
 | `GOOGLE_MAPS_SERVER_KEY`  | Your Google Maps Platform server key     |
 | `GOOGLE_MAPS_PLACES_REGION`| `ZM`                                    |
-| `GOOGLE_MAPS_SIGNING_SECRET`| Set if using static map URL signing (optional) |
-| `RESEND_API_KEY`          | From Resend dashboard (optional; email silently skipped if missing) |
+| `GOOGLE_MAPS_SIGNING_SECRET`| Set for optional server-side Static Maps URL signing |
+| `RESEND_API_KEY`          | From Resend dashboard (required)         |
 | `CLOUDINARY_CLOUD_NAME`   | From Cloudinary dashboard                |
 | `CLOUDINARY_API_KEY`      | From Cloudinary dashboard                |
 | `CLOUDINARY_API_SECRET`   | From Cloudinary dashboard                |
@@ -373,8 +374,8 @@ If you prefer a VM instead of Render:
 ## Development notes
 
 - The dev token `dev-student-token` is accepted outside production for testing protected endpoints.
-- In mock mode (`LENCO_MOCK=true`), Lenco mobile-money and card payments are simulated.
+- Keep `LENCO_MOCK=false` for production verification. Use Lenco sandbox/test credentials before initiating manual payment sweeps.
 - PostGIS is required for the nearby-house search and university-radius queries. The Docker Compose stack includes `postgis/postgis:16-3.4`. On Supabase it's pre-enabled.
 - Google Maps, Cloudinary, and Lenco integration failures are logged server-side with useful upstream detail while the API returns clean envelopes.
-- The current quick health signal is the full test suite: `pytest` should finish with 36 passed and 1 skipped.
+- The current quick health signal is the full test suite: `pytest -q` should finish with 43 passed and 4 skipped unless an integration database is configured.
 - CI on GitHub Actions validates every push.

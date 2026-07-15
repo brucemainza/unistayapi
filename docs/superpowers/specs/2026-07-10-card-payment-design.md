@@ -1,5 +1,7 @@
 # Card Payment Design
 
+> Historical design artifact. The verified current payment contract is maintained in `README.md` and `API_REFERENCE.md`; use Lenco sandbox/test credentials before any live card collection.
+
 ## Goal
 Add Lenco card collection support to the UniStay backend so students can pay for bookings with debit/credit cards, alongside the existing mobile-money flow.
 

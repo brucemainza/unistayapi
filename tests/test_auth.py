@@ -1,5 +1,8 @@
 """Tests for authentication endpoints."""
 
+from unittest.mock import AsyncMock, patch
+
+from app.config import settings
 from tests.conftest import register_user
 
 
@@ -49,3 +52,30 @@ async def test_otp_and_validation_errors_use_envelope(client, unique_user_payloa
     assert invalid.status_code == 422
     assert invalid.json()["status"] is False
     assert invalid.json()["data"] is None
+
+
+async def test_production_resend_otp_does_not_return_code(
+    client, unique_user_payload
+):
+    registered = await register_user(client, unique_user_payload("student"))
+    user_id = registered["user"]["id"]
+
+    previous_env = settings.environment
+    previous_bypass = settings.mock_otp_bypass
+    settings.environment = "production"
+    settings.mock_otp_bypass = False
+    try:
+        with patch(
+            "app.services.auth_service.send_otp_email", new_callable=AsyncMock
+        ) as send_email:
+            send_email.return_value = True
+            resend = await client.post(
+                "/api/auth/resend-otp", json={"user_id": user_id}
+            )
+    finally:
+        settings.environment = previous_env
+        settings.mock_otp_bypass = previous_bypass
+
+    assert resend.status_code == 200, resend.text
+    assert "code" not in resend.json()["data"]
+    assert resend.json()["data"]["expires_in"] == settings.otp_ttl_seconds

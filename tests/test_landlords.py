@@ -86,3 +86,49 @@ async def test_landlord_house_room_payment_details_and_booking_flow(
     )
     assert status.status_code == 200, status.text
     assert status.json()["data"]["status"] == "confirmed"
+
+
+async def test_landlord_can_soft_delete_house_with_rooms(client, unique_user_payload):
+    """Deleting a house with rooms must soft-delete and hide it from searches."""
+    landlord = await register_user(client, unique_user_payload("landlord"))
+    landlord_headers = {"Authorization": f"Bearer {landlord['token']}"}
+
+    with patch(
+        "app.services.house_service.GoogleMapsClient.reverse_geocode",
+        new_callable=AsyncMock,
+    ) as mock_reverse:
+        mock_reverse.return_value = "123 Main St, Lusaka, Zambia"
+        created = await client.post(
+            "/api/landlords/houses",
+            headers=landlord_headers,
+            json={
+                "name": "House To Delete",
+                "location": "Lusaka",
+                "latitude": -15.4167,
+                "longitude": 28.2833,
+                "price": 1300,
+                "available_spaces": 2,
+                "amenities": ["WiFi"],
+                "rooms": [{"type": "Single", "rent": 1300, "available": 2}],
+            },
+        )
+    assert created.status_code == 200, created.text
+    house = created.json()["data"]
+
+    rooms = await client.get(f"/api/houses/{house['id']}/rooms")
+    assert rooms.status_code == 200, rooms.text
+    assert len(rooms.json()["data"]) == 1
+
+    deleted = await client.delete(
+        f"/api/landlords/houses/{house['id']}", headers=landlord_headers
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["status"] is True
+
+    # House should no longer appear in landlord list or public detail
+    houses = await client.get("/api/landlords/me/houses", headers=landlord_headers)
+    assert houses.status_code == 200, houses.text
+    assert not any(item["id"] == house["id"] for item in houses.json()["data"])
+
+    detail = await client.get(f"/api/houses/{house['id']}")
+    assert detail.status_code == 404, detail.text

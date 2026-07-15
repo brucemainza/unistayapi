@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import urllib.parse
 from typing import Any
 
@@ -10,6 +11,9 @@ import httpx
 
 from app.config import settings
 from app.exceptions import AppError
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class GoogleMapsError(AppError):
@@ -29,6 +33,29 @@ class GoogleMapsClient:
         if not self.api_key:
             return url
         return url.replace(self.api_key, "<REDACTED>")
+
+    def _log_upstream_error(self, operation: str, response: httpx.Response) -> None:
+        """Log the full upstream error body with the API key redacted."""
+        try:
+            body = response.json()
+            body_text = json.dumps(body, indent=2)
+        except Exception:
+            body_text = response.text or "<empty body>"
+        logger.error(
+            "Google Maps upstream error",
+            extra={
+                "operation": operation,
+                "status_code": response.status_code,
+                "url": self._redact_url(str(response.url)),
+                "upstream_body": body_text,
+            },
+        )
+
+    def _log_transport_error(self, operation: str, exc: Exception) -> None:
+        logger.warning(
+            "Google Maps transport error",
+            extra={"operation": operation, "error": type(exc).__name__},
+        )
 
     async def autocomplete(
         self, *, input_text: str, session_token: str, region: str | None = None
@@ -53,9 +80,14 @@ class GoogleMapsClient:
             "X-Goog-Api-Key": self.api_key,
             "X-Goog-FieldMask": "suggestions.placePrediction.text,suggestions.placePrediction.placeId",
         }
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.post(url, json=body, headers=headers)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(url, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            self._log_transport_error("places_autocomplete", exc)
+            raise GoogleMapsError("Places autocomplete failed") from exc
         if response.status_code >= 400:
+            self._log_upstream_error("places_autocomplete", response)
             raise GoogleMapsError(
                 f"Places autocomplete failed (HTTP {response.status_code})"
             )
@@ -72,9 +104,14 @@ class GoogleMapsClient:
             "X-Goog-Api-Key": self.api_key,
             "X-Goog-FieldMask": "id,formattedAddress,location",
         }
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url, params=params, headers=headers)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url, params=params, headers=headers)
+        except httpx.HTTPError as exc:
+            self._log_transport_error("place_details", exc)
+            raise GoogleMapsError("Place details failed") from exc
         if response.status_code >= 400:
+            self._log_upstream_error("place_details", response)
             raise GoogleMapsError(
                 f"Place details failed (HTTP {response.status_code})"
             )
@@ -96,9 +133,14 @@ class GoogleMapsClient:
             "X-Goog-Api-Key": self.api_key,
             "X-Goog-FieldMask": "originIndex,destinationIndex,duration,distanceMeters,condition",
         }
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.post(self.ROUTES_URL, json=body, headers=headers)
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(self.ROUTES_URL, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            self._log_transport_error("routes_api", exc)
+            raise GoogleMapsError("Routes API failed") from exc
         if response.status_code >= 400:
+            self._log_upstream_error("routes_api", response)
             raise GoogleMapsError(f"Routes API failed (HTTP {response.status_code})")
         return response.json()
 
@@ -108,9 +150,14 @@ class GoogleMapsClient:
 
         url = f"{self.BASE_URL}/geocode/json"
         params = {"latlng": f"{latitude},{longitude}", "key": self.api_key}
-        async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(url, params=params)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            self._log_transport_error("reverse_geocode", exc)
+            return None
         if response.status_code >= 400:
+            self._log_upstream_error("reverse_geocode", response)
             return None
         data = response.json()
         results = data.get("results") or []
@@ -136,6 +183,100 @@ class GoogleMapsClient:
         }
         url = f"{self.BASE_URL}/staticmap?" + urllib.parse.urlencode(params)
         return self._sign_url(url)
+
+    async def fetch_static_map(
+        self,
+        latitude: float,
+        longitude: float,
+        zoom: int = 15,
+        width: int = 400,
+        height: int = 250,
+    ) -> tuple[bytes, str]:
+        """Fetch a Static Maps image without exposing the server key to callers."""
+        url = self.static_map_url(latitude, longitude, zoom, width, height)
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(url)
+        except httpx.HTTPError as exc:
+            self._log_transport_error("static_map", exc)
+            raise GoogleMapsError("Static map request failed") from exc
+
+        if response.status_code >= 400:
+            self._log_upstream_error("static_map", response)
+            raise GoogleMapsError(
+                f"Static map request failed (HTTP {response.status_code})"
+            )
+
+        content_type = response.headers.get("content-type", "image/png").split(";", 1)[0]
+        if not content_type.startswith("image/"):
+            logger.warning(
+                "Google Static Maps returned a non-image response",
+                extra={"content_type": content_type},
+            )
+            raise GoogleMapsError("Static map response was not an image")
+        return response.content, content_type
+
+    async def health_check(self) -> dict[str, bool]:
+        """Verify the configured key can reach Routes and Places APIs.
+
+        Returns a mapping of service -> ok. Logs warnings for any failures.
+        """
+        results: dict[str, bool] = {"routes": False, "places": False}
+        if not self.api_key:
+            logger.warning("Google Maps server key is not configured; skipping health check")
+            return results
+
+        # Routes API minimal call
+        try:
+            body = {
+                "origins": [{"waypoint": {"location": {"latLng": {"latitude": -15.4167, "longitude": 28.2833}}}}],
+                "destinations": [{"waypoint": {"location": {"latLng": {"latitude": -15.393, "longitude": 28.336}}}}],
+                "travelMode": "DRIVE",
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": "originIndex,destinationIndex,duration,distanceMeters,condition",
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(self.ROUTES_URL, json=body, headers=headers)
+            if response.status_code < 400:
+                results["routes"] = True
+            else:
+                self._log_upstream_error("health_check_routes", response)
+        except Exception as exc:
+            logger.warning("Routes API health check failed", extra={"error": type(exc).__name__, "error_detail": str(exc)})
+
+        # Places API minimal call
+        try:
+            url = f"{self.PLACES_BASE_URL}/places:autocomplete"
+            body = {
+                "input": "Lusaka",
+                "sessionToken": "unistay-health-check",
+                "regionCode": settings.google_maps_places_region,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.api_key,
+                "X-Goog-FieldMask": "suggestions.placePrediction.text",
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(url, json=body, headers=headers)
+            if response.status_code < 400:
+                results["places"] = True
+            else:
+                self._log_upstream_error("health_check_places", response)
+        except Exception as exc:
+            logger.warning("Places API health check failed", extra={"error": type(exc).__name__, "error_detail": str(exc)})
+
+        if not all(results.values()):
+            logger.warning(
+                "Google Maps health check did not pass for all services",
+                extra=results,
+            )
+        else:
+            logger.info("Google Maps health check passed", extra=results)
+        return results
 
     def _sign_url(self, url: str) -> str:
         secret = settings.google_maps_signing_secret

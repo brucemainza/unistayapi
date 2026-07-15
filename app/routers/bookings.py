@@ -1,13 +1,9 @@
 """Bookings router."""
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, Response
 
-from app.dependencies import CurrentUser, get_db
-from app.repositories.booking_repo import BookingRepository
-from app.repositories.house_repo import HouseRepository
-from app.repositories.notification_repo import NotificationRepository
-from app.repositories.room_repo import RoomRepository
+from app.dependencies import StudentUser
+from app.providers import get_booking_service
 from app.schemas.booking import BookingCreateRequest, BookingStatusUpdateRequest
 from app.schemas.common import envelope
 from app.services.booking_service import BookingService
@@ -15,49 +11,67 @@ from app.services.booking_service import BookingService
 router = APIRouter()
 
 
-def _service(db: AsyncSession) -> BookingService:
-    return BookingService(
-        BookingRepository(db),
-        HouseRepository(db),
-        RoomRepository(db),
-        NotificationRepository(db),
-    )
-
-
 @router.post("")
 async def create_booking(
     body: BookingCreateRequest,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
 ) -> dict:
-    booking = await _service(db).create_booking(current_user.id, body)
+    booking = await service.create_booking(current_user.id, body)
     return envelope(True, "Booking created", booking)
 
 
 @router.get("")
 async def list_bookings(
-    current_user: CurrentUser, db: AsyncSession = Depends(get_db)
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
 ) -> dict:
-    bookings = await _service(db).list_bookings(current_user.id)
+    bookings = await service.list_bookings(current_user.id)
     return envelope(True, "Bookings retrieved", bookings)
 
 
 @router.get("/{booking_id}/receipt")
 async def booking_receipt(
-    booking_id: str, current_user: CurrentUser, db: AsyncSession = Depends(get_db)
+    booking_id: str,
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
 ) -> dict:
-    receipt = await _service(db).get_receipt(current_user.id, booking_id)
+    receipt = await service.get_receipt(current_user.id, booking_id)
     return envelope(True, "Booking receipt", receipt)
+
+
+@router.get("/{booking_id}/receipt.pdf")
+async def booking_receipt_pdf(
+    booking_id: str,
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
+) -> Response:
+    filename, pdf_bytes = await service.get_receipt_pdf(current_user.id, booking_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{booking_id}/receipt/email")
+async def email_booking_receipt(
+    booking_id: str,
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
+) -> dict:
+    result = await service.email_receipt(current_user.id, booking_id)
+    return envelope(True, "Booking receipt emailed", result)
 
 
 @router.patch("/{booking_id}/status")
 async def update_booking_status(
     booking_id: str,
     body: BookingStatusUpdateRequest,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    current_user: StudentUser,
+    service: BookingService = Depends(get_booking_service),
 ) -> dict:
-    booking = await _service(db).update_status(
+    booking = await service.update_status(
         booking_id, body.status, actor_id=current_user.id
     )
     return envelope(True, "Booking status updated", booking)

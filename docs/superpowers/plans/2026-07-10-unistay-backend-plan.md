@@ -1,5 +1,7 @@
 # UniStay Backend Implementation Plan
 
+> Historical planning artifact. The verified current contract is maintained in `README.md` and `API_REFERENCE.md`. Earlier references here to mock OTP or `LENCO_MOCK=true` do not describe production behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a complete FastAPI backend for UniStay with PostgreSQL/PostGIS, Alembic migrations, Lenco payment integration, and Docker Compose deployment.

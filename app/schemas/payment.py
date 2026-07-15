@@ -50,3 +50,7 @@ class PaymentResponse(BaseModel):
     currency: str
     paymentType: str
     lencoReference: str | None = None
+
+    # Card flows may include 3DS metadata / card details.
+    meta: dict | None = None
+    cardDetails: dict | None = None

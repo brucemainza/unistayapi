@@ -48,4 +48,9 @@ class UserResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     token: str
-    user: dict
+    user: UserResponse
+
+
+class SignupResponse(BaseModel):
+    id: str
+    email: str

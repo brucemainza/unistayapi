@@ -4,6 +4,7 @@ Codes are never stored in plain text; only SHA-256 hashes are written to Redis.
 """
 
 import hashlib
+import hmac
 import secrets
 
 import redis.asyncio as aioredis
@@ -69,7 +70,7 @@ async def verify_otp(redis: aioredis.Redis, email: str, submitted_code: str) -> 
     if stored_hash is None:
         return False
 
-    if _hash_code(submitted_code) != stored_hash:
+    if not hmac.compare_digest(_hash_code(submitted_code), stored_hash):
         return False
 
     pipe = redis.pipeline()

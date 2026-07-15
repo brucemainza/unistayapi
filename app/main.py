@@ -6,10 +6,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.clients.google_maps_client import GoogleMapsClient
 from app.config import settings
-from app.dependencies import close_redis
+from app.dependencies import async_session, close_redis, ping_redis
 from app.exceptions import AppError
 from app.logging_config import (
     generate_correlation_id,
@@ -33,7 +34,7 @@ from app.routers import (
 )
 
 logger = get_logger(__name__)
-setup_logging()
+setup_logging(environment=settings.environment)
 
 
 @asynccontextmanager
@@ -44,17 +45,17 @@ async def lifespan(app: FastAPI):
     degraded_maps = {"routes": False, "places": False}
     try:
         app.state.maps_health = await asyncio.wait_for(
-            GoogleMapsClient().health_check(), timeout=5.0
+            GoogleMapsClient().health_check(), timeout=25.0
         )
     except asyncio.TimeoutError:
         logger.warning(
-            "Google Maps startup health check timed out after 5s; degrading"
+            "Google Maps startup health check timed out after 25s; degrading"
         )
         app.state.maps_health = degraded_maps
     except Exception as exc:
         logger.warning(
             "Google Maps startup health check raised; degrading",
-            extra={"error": type(exc).__name__, "message": str(exc)},
+            extra={"error": type(exc).__name__, "error_detail": str(exc)},
         )
         app.state.maps_health = degraded_maps
     yield
@@ -87,6 +88,23 @@ async def validation_error_handler(
     return JSONResponse(
         status_code=422,
         content={"status": False, "message": message, "data": None},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return the standard envelope for unexpected failures."""
+    logger.exception(
+        "Unhandled request error",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "correlation_id": get_correlation_id(),
+        },
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"status": False, "message": "Internal server error", "data": None},
     )
 
 
@@ -136,15 +154,45 @@ app.include_router(landlords.router, prefix="/api/landlords", tags=["landlords"]
 
 
 @app.get("/api/health")
-async def health_check() -> dict:
+async def health_check() -> JSONResponse:
     """Return service health status."""
     maps_health = getattr(app.state, "maps_health", {"routes": False, "places": False})
-    return {
-        "status": True,
-        "message": "OK",
+    database_ok = False
+    redis_ok = False
+
+    try:
+        async def check_database() -> bool:
+            async with async_session() as session:
+                return (await session.execute(text("select 1"))).scalar_one() == 1
+
+        # Supabase's pooler can take several seconds to establish a fresh TLS
+        # connection on a high-latency network. Keep the probe bounded, but do
+        # not report a healthy database as down before a normal handshake can finish.
+        database_ok = await asyncio.wait_for(check_database(), timeout=15.0)
+    except Exception as exc:
+        logger.warning(
+            "Database health check failed",
+            extra={"error": type(exc).__name__, "error_detail": str(exc)},
+        )
+
+    try:
+        redis_ok = await asyncio.wait_for(ping_redis(), timeout=5.0)
+    except Exception as exc:
+        logger.warning(
+            "Redis health check failed",
+            extra={"error": type(exc).__name__, "error_detail": str(exc)},
+        )
+
+    healthy = database_ok and redis_ok and all(maps_health.values())
+    body = {
+        "status": healthy,
+        "message": "OK" if healthy else "Service dependency unavailable",
         "data": {
             "environment": settings.environment,
             "lenco_mock": settings.lenco_mock,
+            "database": database_ok,
+            "redis": redis_ok,
             "google_maps": maps_health,
         },
     }
+    return JSONResponse(status_code=200 if healthy else 503, content=body)
